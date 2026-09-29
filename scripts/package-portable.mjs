@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync, rmSync } from 'node:fs'
+import { readFileSync, readdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
 
 const packageJson = JSON.parse(
@@ -13,8 +13,16 @@ const archive = path.join(
 )
 
 rmSync(archive, { force: true })
-execFileSync('tar', ['-a', '-c', '-f', archive, '-C', sourceDir, '.'], {
-  stdio: 'inherit'
-})
+const ignoredEntries = new Set(['data', 'workspace', 'logs'])
+const entries = readdirSync(sourceDir).filter(
+  (name) => !ignoredEntries.has(name)
+)
+execFileSync(
+  'tar',
+  ['-a', '-c', '-f', archive, '-C', sourceDir, ...entries],
+  {
+    stdio: 'inherit'
+  }
+)
 
 console.log(`Portable archive: ${archive}`)
