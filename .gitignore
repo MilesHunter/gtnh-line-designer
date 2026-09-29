@@ -1,0 +1,13 @@
+node_modules/
+out/
+release*/
+data/
+workspace/
+logs/
+coverage/
+.cache/
+resources/integrations/
+*.tsbuildinfo
+*.log
+.DS_Store
+Thumbs.db

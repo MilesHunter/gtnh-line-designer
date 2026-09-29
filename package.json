@@ -1,0 +1,77 @@
+{
+  "name": "gtnh-line-designer",
+  "version": "0.1.0",
+  "description": "Offline visual production-line designer for GregTech: New Horizons",
+  "main": "out/main/index.js",
+  "author": "GTNH Skill Workspace",
+  "license": "MIT",
+  "homepage": "https://github.com/MilesHunter/gtnh-line-designer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MilesHunter/gtnh-line-designer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MilesHunter/gtnh-line-designer/issues"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "integrations:build": "node scripts/build-integrations.mjs",
+    "package": "npm run build && npm run integrations:build && electron-builder --win dir && node scripts/package-portable.mjs"
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.14.13",
+    "@xyflow/react": "^12.12.0",
+    "html-to-image": "^1.11.13",
+    "javascript-lp-solver": "^0.4.24",
+    "lucide-react": "^1.48.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.16",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^5.0.0",
+    "jsdom": "^27.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7"
+  },
+  "build": {
+    "appId": "local.gtnh.line-designer",
+    "productName": "GTNH Line Designer",
+    "asar": true,
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json",
+      "README.md",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/integrations",
+        "to": "integrations"
+      }
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "zip"
+      ]
+    },
+    "artifactName": "${productName}-${version}-portable-${arch}.${ext}"
+  }
+}

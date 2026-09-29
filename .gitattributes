@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+*.png binary
+*.webp binary
+*.zip binary
+*.jar binary
+*.exe binary
