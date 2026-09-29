@@ -1077,7 +1077,9 @@ export class LocalExportManager {
       error: patch.error
     }
     this.state.localImport = progress
-    void this.saveState()
+    void this.saveState().catch((error) => {
+      console.warn('Unable to persist local import progress', error)
+    })
     this.onProgress?.(progress)
     return progress
   }
@@ -1092,8 +1094,13 @@ export class LocalExportManager {
   private async writeJsonAtomic(destination: string, value: unknown): Promise<void> {
     await mkdir(path.dirname(destination), { recursive: true })
     const temp = `${destination}.${process.pid}.tmp`
-    await writeFile(temp, JSON.stringify(value, null, 2))
-    await rename(temp, destination)
+    try {
+      await writeFile(temp, JSON.stringify(value, null, 2))
+      await rename(temp, destination)
+    } catch (error) {
+      await rm(temp, { force: true }).catch(() => undefined)
+      throw error
+    }
   }
 }
 
