@@ -1,4 +1,12 @@
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile
+} from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -330,13 +338,18 @@ describe('LocalExportManager', () => {
     })
     await manager.initialize()
     await manager.inspectAndBind(fixture.gameDir)
+    const resolvedInstalledJar = path.join(
+      await realpath(fixture.gameDir),
+      'mods',
+      'NESQL-Exporter-0.5.7-ShadowTheAge.jar'
+    )
 
     const session = await manager.prepareExport()
     expect(await readFile(installedJar, 'utf8')).toBe('nesql-main')
     expect(session.movedFiles).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          originalPath: installedJar,
+          originalPath: resolvedInstalledJar,
           kind: 'existing-nesql'
         })
       ])
