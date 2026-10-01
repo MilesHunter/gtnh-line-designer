@@ -1,10 +1,11 @@
 import { createServer, type Server } from 'node:http'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   downloadFileWithFallback,
+  moveDirectoryWithRetry,
   type DownloadFileResult
 } from './download-utils'
 
@@ -104,4 +105,26 @@ describe('downloadFileWithFallback', () => {
     expect(result.bytes).toBe(payload.length)
     expect(await readFile(destination)).toEqual(payload)
   }, 20_000)
+})
+
+describe('moveDirectoryWithRetry', () => {
+  it('replaces a stale destination directory', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gtnh-move-'))
+    temporaryRoots.push(root)
+    const source = path.join(root, 'downloads', 'commit')
+    const destination = path.join(root, 'cache', 'commit')
+    await mkdir(source, { recursive: true })
+    await mkdir(destination, { recursive: true })
+    await writeFile(path.join(source, 'data.bin.gz'), 'new-data')
+    await writeFile(path.join(destination, 'stale.txt'), 'stale')
+
+    await moveDirectoryWithRetry(source, destination)
+
+    expect(await readFile(path.join(destination, 'data.bin.gz'), 'utf8')).toBe(
+      'new-data'
+    )
+    await expect(
+      readFile(path.join(destination, 'stale.txt'), 'utf8')
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
 })

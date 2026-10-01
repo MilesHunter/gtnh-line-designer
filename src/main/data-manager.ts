@@ -24,7 +24,8 @@ import {
 import {
   describeDownloadError,
   downloadFileWithFallback,
-  hashFile
+  hashFile,
+  moveDirectoryWithRetry
 } from './download-utils'
 
 const KNOWN_VERSIONS: VersionChoice[] = [
@@ -409,16 +410,7 @@ export class DataManager {
       }
 
       await writeFile(path.join(tempDir, 'manifest.json'), JSON.stringify(manifest, null, 2))
-      await mkdir(path.dirname(targetDir), { recursive: true })
-      try {
-        await rename(tempDir, targetDir)
-      } catch (error) {
-        if (await fileExists(manifestPath)) {
-          await rm(tempDir, { recursive: true, force: true })
-        } else {
-          throw error
-        }
-      }
+      await moveDirectoryWithRetry(tempDir, targetDir)
 
       onProgress({ ref: resolved.ref, stage: 'ready', message: '数据下载完成' })
       return {

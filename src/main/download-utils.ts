@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { createReadStream, createWriteStream, type WriteStream } from 'node:fs'
-import { rename, rm, stat } from 'node:fs/promises'
+import { mkdir, rename, rm, stat } from 'node:fs/promises'
+import path from 'node:path'
 import { Readable } from 'node:stream'
 
 export interface DownloadFileResult {
@@ -150,6 +151,38 @@ export async function downloadToFile(
   }
 
   throw lastError ?? new Error(`下载失败：${url}`)
+}
+
+export async function moveDirectoryWithRetry(
+  source: string,
+  destination: string,
+  attempts = 6
+): Promise<void> {
+  let lastError: unknown
+  const retryable = new Set(['EPERM', 'EACCES', 'EBUSY', 'EEXIST', 'ENOTEMPTY'])
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await mkdir(path.dirname(destination), { recursive: true })
+      await rm(destination, {
+        recursive: true,
+        force: true,
+        maxRetries: 2,
+        retryDelay: 100
+      })
+      await rename(source, destination)
+      return
+    } catch (error) {
+      lastError = error
+      const code = (error as NodeJS.ErrnoException).code
+      if (!code || !retryable.has(code) || attempt === attempts - 1) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150 * 2 ** attempt))
+    }
+  }
+
+  throw lastError ?? new Error('无法移动下载目录')
 }
 
 export function describeDownloadError(error: Error): string {
