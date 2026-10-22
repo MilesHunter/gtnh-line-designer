@@ -21,7 +21,7 @@
     "test": "vitest run",
     "integrations:build": "node scripts/build-integrations.mjs",
     "verify:portable": "node scripts/verify-portable-archive.mjs",
-    "package": "npm run build && npm run integrations:build && electron-builder --win dir && node scripts/package-portable.mjs && npm run verify:portable"
+    "package": "npm run build && node node_modules/electron/install.js && npm run integrations:build && electron-builder --win dir --publish never && node scripts/package-portable.mjs && npm run verify:portable"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.13",
