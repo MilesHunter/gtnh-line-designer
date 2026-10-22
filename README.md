@@ -94,6 +94,10 @@ npm run integrations:build
 npm run package
 ```
 
+`npm run package` 结束时会调用 [scripts/verify-portable-archive.mjs](scripts/verify-portable-archive.mjs)，确认归档不包含数据缓存、项目、日志或 GTNH 配方资产，并检查 Windows 资源管理器兼容的 ZIP 条目格式。
+
+公开 Release 由 [.github/workflows/release.yml](.github/workflows/release.yml) 在推送 `v*` tag 时自动构建，使用仓库自带的 `GITHUB_TOKEN` 上传 portable ZIP 和 `SHA256SUMS.txt`，不需要个人 PAT。完整步骤见 [docs/RELEASING.md](docs/RELEASING.md)。
+
 ## 数据与发布说明
 
 - 本仓库和 Release 不包含 GTNH 配方数据包。
@@ -106,6 +110,7 @@ npm run package
 
 - [架构说明](docs/ARCHITECTURE.md)
 - [数据与第三方来源](docs/DATA_SOURCES.md)
+- [发布流程](docs/RELEASING.md)
 - [变更日志](CHANGELOG.md)
 - [第三方声明](THIRD_PARTY_NOTICES.md)
 

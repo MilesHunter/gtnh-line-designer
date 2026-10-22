@@ -18,6 +18,9 @@ const NESQL_VERSION = '0.5.7-ShadowTheAge'
 const NESQL_LEGACY_COMMIT = '9f467e16ad40bfa4e7ff042e986579b1d416a9ea'
 const NESQL_LEGACY_VERSION = '0.5.6-ShadowTheAge'
 const CONVERTER_COMMIT = 'af8c79888ec859913b27543c1381c3c11c24658f'
+const GRADLE_DISTRIBUTION_URL =
+  process.env.GRADLE_DISTRIBUTION_URL ??
+  'https://mirrors.cloud.tencent.com/gradle/gradle-8.7-bin.zip'
 
 const root = path.resolve(import.meta.dirname, '..')
 const cacheRoot = path.join(root, '.cache', 'integrations')
@@ -60,6 +63,25 @@ function ensureCheckout(repo, remote, commit) {
 
 function sha256(filePath) {
   return createHash('sha256').update(readFileSync(filePath)).digest('hex')
+}
+
+function configureGradleWrapper(repo) {
+  const propertiesPath = path.join(
+    repo,
+    'gradle',
+    'wrapper',
+    'gradle-wrapper.properties'
+  )
+  const contents = readFileSync(propertiesPath, 'utf8')
+  const escapedUrl = GRADLE_DISTRIBUTION_URL.replaceAll(':', '\\:')
+  const updated = contents.replace(
+    /^distributionUrl=.*$/m,
+    `distributionUrl=${escapedUrl}`
+  )
+  if (updated === contents && !contents.includes(escapedUrl)) {
+    throw new Error(`Could not set Gradle distribution URL in ${propertiesPath}`)
+  }
+  writeFileSync(propertiesPath, updated)
 }
 
 function findJava17() {
@@ -432,17 +454,7 @@ const gradleEnv = {
   JAVA_HOME: javaHome,
   PATH: `${path.join(javaHome, 'bin')}${pathSeparator}${process.env.PATH ?? ''}`
 }
-const gradleWrapperProperties = path.join(
-  nesqlRepo,
-  'gradle',
-  'wrapper',
-  'gradle-wrapper.properties'
-)
-const gradleWrapper = readFileSync(gradleWrapperProperties, 'utf8').replace(
-  'https\\://services.gradle.org/distributions/gradle-8.7-bin.zip',
-  'https\\://mirrors.cloud.tencent.com/gradle/gradle-8.7-bin.zip'
-)
-writeFileSync(gradleWrapperProperties, gradleWrapper)
+configureGradleWrapper(nesqlRepo)
 const gradlePropertiesPath = path.join(nesqlRepo, 'gradle.properties')
 const java8Path = java8Home.replaceAll('\\', '/')
 let gradleProperties = readFileSync(gradlePropertiesPath, 'utf8')
@@ -520,20 +532,7 @@ ensureCheckout(
   'https://github.com/ShadowTheAge/nesql-exporter.git',
   NESQL_LEGACY_COMMIT
 )
-const legacyGradleWrapperProperties = path.join(
-  nesqlLegacyRepo,
-  'gradle',
-  'wrapper',
-  'gradle-wrapper.properties'
-)
-const legacyGradleWrapper = readFileSync(
-  legacyGradleWrapperProperties,
-  'utf8'
-).replace(
-  'https\\://services.gradle.org/distributions/gradle-8.7-bin.zip',
-  'https\\://mirrors.cloud.tencent.com/gradle/gradle-8.7-bin.zip'
-)
-writeFileSync(legacyGradleWrapperProperties, legacyGradleWrapper)
+configureGradleWrapper(nesqlLegacyRepo)
 const legacyGradlePropertiesPath = path.join(
   nesqlLegacyRepo,
   'gradle.properties'

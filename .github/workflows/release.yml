@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (for example v0.1.0). Leave empty to build the current branch.'
+        required: false
+        type: string
+      publish:
+        description: 'Create or update the GitHub Release for the tag.'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve release metadata
+        id: meta
+        shell: pwsh
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
+          GITHUB_REF_NAME_VALUE: ${{ github.ref_name }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = $env:INPUT_TAG
+          if ([string]::IsNullOrWhiteSpace($tag) -and $env:GITHUB_REF_VALUE -like 'refs/tags/*') {
+            $tag = $env:GITHUB_REF_NAME_VALUE
+          }
+          $publish = $env:GITHUB_REF_VALUE -like 'refs/tags/*' -or $env:INPUT_PUBLISH -eq 'true'
+          if ($publish -and [string]::IsNullOrWhiteSpace($tag)) {
+            throw 'Publishing needs a tag. Push a tag or fill the tag input.'
+          }
+          if ($publish -and $tag -ne "v$version") {
+            throw "Tag $tag does not match package.json version v$version."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "publish=$($publish.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          Write-Host "version=$version tag=$tag publish=$publish"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build integrations and portable archive
+        env:
+          GRADLE_DISTRIBUTION_URL: https://services.gradle.org/distributions/gradle-8.7-bin.zip
+        run: npm run package
+
+      - name: Generate SHA-256
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          $archive = "release/GTNH-Line-Designer-$env:VERSION-portable-x64.zip"
+          if (-not (Test-Path -LiteralPath $archive)) {
+            throw "Portable archive not found: $archive"
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+          "$hash  $(Split-Path -Leaf $archive)" |
+            Set-Content -LiteralPath 'release/SHA256SUMS.txt' -Encoding ascii
+          Get-Content -LiteralPath 'release/SHA256SUMS.txt'
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GTNH-Line-Designer-${{ steps.meta.outputs.version }}
+          path: |
+            release/GTNH-Line-Designer-*-portable-x64.zip
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: steps.meta.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          $archive = "release/GTNH-Line-Designer-$env:VERSION-portable-x64.zip"
+          $checksum = 'release/SHA256SUMS.txt'
+          $notes = "docs/RELEASE_NOTES_$env:TAG.md"
+          $notesArgs = @()
+          if (Test-Path -LiteralPath $notes) {
+            $notesArgs = @('--notes-file', $notes)
+          } else {
+            $notesArgs = @('--generate-notes')
+          }
+
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            if (Test-Path -LiteralPath $notes) {
+              gh release edit $env:TAG --notes-file $notes
+              if ($LASTEXITCODE -ne 0) {
+                throw 'Failed to update release notes.'
+              }
+            }
+            gh release upload $env:TAG $archive $checksum --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to upload release assets.'
+            }
+          } else {
+            gh release create $env:TAG $archive $checksum --verify-tag `
+              --title "GTNH Line Designer $env:VERSION" @notesArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to create the GitHub Release.'
+            }
+          }

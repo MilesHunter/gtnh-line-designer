@@ -20,7 +20,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "integrations:build": "node scripts/build-integrations.mjs",
-    "package": "npm run build && npm run integrations:build && electron-builder --win dir && node scripts/package-portable.mjs"
+    "verify:portable": "node scripts/verify-portable-archive.mjs",
+    "package": "npm run build && npm run integrations:build && electron-builder --win dir && node scripts/package-portable.mjs && npm run verify:portable"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.13",
