@@ -334,6 +334,17 @@ function prepareNesqlBuild(repo, options = {}) {
       )
     }
     writeFileSync(gradlePropertiesPath, gradleProperties)
+    if (!buildScript.includes('module = "CodeChickenLib"')) {
+      buildScript += `
+
+configurations.configureEach {
+    // GTNH 2.8.4 metadata pulls CodeChickenLib 1.3.0, which is no longer
+    // available from the configured Maven repositories. CodeChickenCore
+    // already provides the codechicken.lib classes used by NESQL.
+    exclude(group = "com.github.GTNewHorizons", module = "CodeChickenLib")
+}
+`
+    }
   }
   writeFileSync(buildFile, buildScript)
 }
