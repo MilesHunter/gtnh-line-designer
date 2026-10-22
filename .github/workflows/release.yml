@@ -121,6 +121,8 @@ jobs:
           TAG: ${{ steps.meta.outputs.tag }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
           $archive = "release/GTNH-Line-Designer-$env:VERSION-portable-x64.zip"
           $checksum = 'release/SHA256SUMS.txt'
           $notes = "docs/RELEASE_NOTES_$env:TAG.md"
