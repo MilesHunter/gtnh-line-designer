@@ -7,6 +7,7 @@ import {
   Recipe,
   RecipeIoType,
   RecipeObject,
+  RecipeType,
   Repository
 } from './vendor/repository'
 import {
@@ -22,10 +23,18 @@ import { voltageTier } from './vendor/utils'
 import { RecipeModel, type OverclockResult } from './model'
 import type {
   ComputedNode,
+  ExactRecipeSearchRequest,
+  ExactRecipeSearchResponse,
   GoodsSummary,
+  GraphNode,
   MachineChoice,
   MachineInfo,
-  ProjectDocumentV1,
+  MachineRef,
+  MachineSearchResponse,
+  MachineSummary,
+  ProjectDocument,
+  ProjectValidationIssue,
+  ProjectValidationResult,
   RecipeDetail,
   RecipePort,
   RecipeSearchMode,
@@ -34,6 +43,11 @@ import type {
   SearchRecipeResult,
   SolveResult
 } from '../../../shared/types'
+import {
+  isSingleBlockMachine,
+  machineDisplayName,
+  machineSearchText
+} from './machine-names'
 
 type SearchableGoods = Goods & {
   production: Int32Array
@@ -41,11 +55,20 @@ type SearchableGoods = Goods & {
 }
 
 interface IndexedGoods {
-  object: SearchableGoods
+  object: RecipeObject
   id: string
   name: string
   normalizedName: string
-  kind: 'item' | 'fluid'
+  normalizedSearch: string
+  kind: 'item' | 'fluid' | 'ore'
+}
+
+interface IndexedMachine {
+  item: Item
+  recipeTypes: Set<string>
+  multiblock: boolean
+  displayName: string
+  normalizedSearch: string
 }
 
 interface InternalPort {
@@ -56,6 +79,11 @@ interface InternalPort {
 interface ComputedInternal {
   publicNode: ComputedNode
   ports: Map<string, InternalPort>
+}
+
+interface IndexedRecipeLinks {
+  production: Set<string>
+  consumption: Set<string>
 }
 
 const IO_INPUT = new Set<number>([
@@ -101,7 +129,12 @@ function toMachineChoice(key: string, choice: Choice): MachineChoice {
 export class GtnhEngine {
   private repository: Repository | null = null
   private goodsIndex: IndexedGoods[] = []
+  private machineIndex: IndexedMachine[] = []
+  private readonly machineById = new Map<string, IndexedMachine>()
+  private readonly itemOreDicts = new Map<string, Set<string>>()
+  private readonly oreRecipeLinks = new Map<string, IndexedRecipeLinks>()
   private readonly recipeDetailCache = new Map<string, RecipeDetail>()
+  private readonly previewCache = new Map<string, ComputedNode>()
 
   load(buffer: ArrayBuffer): {
     dataVersion: number
@@ -113,7 +146,12 @@ export class GtnhEngine {
     const repository = Repository.load(buffer)
     this.repository = repository
     this.recipeDetailCache.clear()
+    this.previewCache.clear()
     this.goodsIndex = []
+    this.machineIndex = []
+    this.machineById.clear()
+    this.itemOreDicts.clear()
+    this.oreRecipeLinks.clear()
 
     for (const pointer of repository.items) {
       const object = repository.GetObject(pointer, Item)
@@ -123,6 +161,18 @@ export class GtnhEngine {
       const object = repository.GetObject(pointer, Fluid)
       this.goodsIndex.push(this.indexGoods(object, 'fluid'))
     }
+    for (const pointer of repository.oreDicts) {
+      const object = repository.GetObject(pointer, OreDict)
+      this.goodsIndex.push(this.indexGoods(object, 'ore'))
+      for (const item of object.items) {
+        const entries = this.itemOreDicts.get(item.id) ?? new Set<string>()
+        entries.add(object.id)
+        this.itemOreDicts.set(item.id, entries)
+      }
+    }
+
+    this.buildMachineIndex(repository)
+    this.buildOreRecipeIndex(repository)
 
     return {
       dataVersion: repository.elements[0],
@@ -133,6 +183,108 @@ export class GtnhEngine {
     }
   }
 
+  searchGoods(query: string, limit = 40): RecipeSearchResponse {
+    this.requireRepository()
+    const normalized = normalize(query)
+    const items = this.searchGoodsEntries(normalized, limit)
+    return {
+      items,
+      recipes: [],
+      total: items.length
+    }
+  }
+
+  searchMachines(query: string, limit = 80): MachineSearchResponse {
+    this.requireRepository()
+    const normalized = normalize(query)
+    let candidates = this.machineIndex
+    if (normalized) {
+      candidates = candidates.filter((entry) =>
+        entry.normalizedSearch.includes(normalized)
+      )
+    }
+    const sorted = [...candidates].sort((a, b) => {
+      if (!normalized) return a.displayName.localeCompare(b.displayName, 'zh-CN')
+      const aExact =
+        normalize(a.displayName) === normalized ||
+        normalize(a.item.name) === normalized
+          ? 0
+          : 1
+      const bExact =
+        normalize(b.displayName) === normalized ||
+        normalize(b.item.name) === normalized
+          ? 0
+          : 1
+      if (aExact !== bExact) return aExact - bExact
+      const aPrefix = a.normalizedSearch.startsWith(normalized) ? 0 : 1
+      const bPrefix = b.normalizedSearch.startsWith(normalized) ? 0 : 1
+      if (aPrefix !== bPrefix) return aPrefix - bPrefix
+      return a.displayName.localeCompare(b.displayName, 'zh-CN')
+    })
+    return {
+      machines: sorted.slice(0, limit).map((entry) => this.machineSummary(entry)),
+      total: candidates.length
+    }
+  }
+
+  getMachine(machineId: string): MachineSummary | null {
+    const entry = this.machineById.get(machineId)
+    return entry ? this.machineSummary(entry) : null
+  }
+
+  searchExactRecipes(
+    request: ExactRecipeSearchRequest
+  ): ExactRecipeSearchResponse {
+    this.requireRepository()
+    const offset = Math.max(0, request.offset ?? 0)
+    const limit = Math.max(1, Math.min(500, request.limit ?? 100))
+    const inputIds = request.input
+      ? this.recipeIdsForGoods(request.input, 'input')
+      : null
+    const outputIds = request.output
+      ? this.recipeIdsForGoods(request.output, 'output')
+      : null
+
+    let candidates: Set<string> | null = inputIds
+    if (outputIds) {
+      if (!candidates) candidates = outputIds
+      else candidates = new Set([...candidates].filter((id) => outputIds.has(id)))
+    }
+    if (!candidates) {
+      return { recipes: [], total: 0, hasMore: false }
+    }
+
+    const repository = this.requireRepository()
+    const machine = request.machineId
+      ? this.machineById.get(request.machineId)
+      : undefined
+    const matching = [...candidates].filter((id) => {
+      const recipe = repository.GetById<Recipe>(id)
+      if (!recipe) return false
+      return !machine || machine.recipeTypes.has(recipe.recipeType.name)
+    })
+    const fixedCrafter = machine ? this.machineRef(machine) : undefined
+    matching.sort((a, b) => {
+      const recipeA = repository.GetById<Recipe>(a)
+      const recipeB = repository.GetById<Recipe>(b)
+      if (!recipeA || !recipeB) return a.localeCompare(b)
+      const typeCompare = recipeA.recipeType.name.localeCompare(
+        recipeB.recipeType.name
+      )
+      if (typeCompare !== 0) return typeCompare
+      return a.localeCompare(b)
+    })
+
+    return {
+      recipes: matching
+        .slice(offset, offset + limit)
+        .map((id) => this.compactRecipeSummary(id, fixedCrafter))
+        .filter((entry): entry is SearchRecipeResult => Boolean(entry)),
+      total: matching.length,
+      hasMore: offset + limit < matching.length
+    }
+  }
+
   search(
     query: string,
     limit = 80,
@@ -140,7 +292,7 @@ export class GtnhEngine {
   ): RecipeSearchResponse {
     this.requireRepository()
     const normalized = normalize(query)
-    const items = this.searchGoods(normalized, limit)
+    const items = this.searchGoodsEntries(normalized, limit)
     const recipes = this.searchRecipes(normalized, items, limit, mode)
     return {
       items,
@@ -183,13 +335,126 @@ export class GtnhEngine {
     return detail
   }
 
-  solve(project: ProjectDocumentV1, revision: number): SolveResult {
+  previewNode(node: GraphNode): ComputedNode | null {
+    const repository = this.requireRepository()
+    if (!node.recipeId) return null
+    const recipe = repository.GetById<Recipe>(node.recipeId)
+    if (!recipe) return null
+    const signature = `${node.id}:${JSON.stringify({
+      recipeId: node.recipeId,
+      machine: node.machine,
+      rateMode: node.rateMode,
+      machineCount: node.machineCount,
+      targetPortKey: node.targetPortKey,
+      targetRate: node.targetRate,
+      voltageTier: node.voltageTier,
+      choices: node.choices,
+      overrides: node.overrides
+    })}`
+    const cached = this.previewCache.get(signature)
+    if (cached) return cached
+    const result = this.computeNode(node.id, recipe, node).publicNode
+    this.previewCache.set(signature, result)
+    return result
+  }
+
+  validate(project: ProjectDocument): ProjectValidationResult {
+    const repository = this.requireRepository()
+    const issues: ProjectValidationIssue[] = []
+    const computed = new Map<string, ComputedInternal>()
+    const removedEdgeIds: string[] = []
+
+    for (const node of project.nodes) {
+      if (!node.machine?.id) {
+        issues.push({ nodeId: node.id, message: '尚未选择机器' })
+        continue
+      }
+      if (!node.recipeId) {
+        issues.push({ nodeId: node.id, message: '尚未选择配方' })
+        continue
+      }
+      const recipe = repository.GetById<Recipe>(node.recipeId)
+      if (!recipe) {
+        issues.push({
+          nodeId: node.id,
+          message: `当前数据版本中不存在配方 ${node.recipeId}`
+        })
+        continue
+      }
+      const machine = this.machineById.get(node.machine.id)
+      if (!machine || !machine.recipeTypes.has(recipe.recipeType.name)) {
+        issues.push({
+          nodeId: node.id,
+          message: '所选机器不能执行当前配方'
+        })
+        continue
+      }
+      const result = this.computeNode(node.id, recipe, node)
+      computed.set(node.id, result)
+      if (!result.publicNode.valid) {
+        for (const warning of result.publicNode.warnings) {
+          issues.push({ nodeId: node.id, message: warning })
+        }
+      }
+    }
+
+    for (const edge of project.edges) {
+      const sourceNode = project.nodes.find(
+        (node) => node.id === edge.source.nodeId
+      )
+      const targetNode = project.nodes.find(
+        (node) => node.id === edge.target.nodeId
+      )
+      if (!sourceNode || !targetNode) {
+        removedEdgeIds.push(edge.id)
+        continue
+      }
+      if (
+        !sourceNode.recipeId ||
+        !targetNode.recipeId ||
+        !repository.GetById<Recipe>(sourceNode.recipeId) ||
+        !repository.GetById<Recipe>(targetNode.recipeId)
+      ) {
+        continue
+      }
+      const source = computed.get(edge.source.nodeId)
+      const target = computed.get(edge.target.nodeId)
+      const sourcePort = source?.ports.get(edge.source.portKey)
+      const targetPort = target?.ports.get(edge.target.portKey)
+      if (!sourcePort || !targetPort) {
+        removedEdgeIds.push(edge.id)
+        continue
+      }
+      if (
+        sourcePort.publicPort.direction !== 'output' ||
+        targetPort.publicPort.direction !== 'input'
+      ) {
+        issues.push({ edgeId: edge.id, message: '连线方向无效' })
+        continue
+      }
+      if (!this.areCompatible(sourcePort, targetPort)) {
+        issues.push({ edgeId: edge.id, message: '连线物料类型不兼容' })
+      }
+    }
+
+    return {
+      valid: issues.length === 0,
+      issues,
+      removedEdgeIds
+    }
+  }
+
+  solve(project: ProjectDocument, revision: number): SolveResult {
     try {
       const repository = this.requireRepository()
       const computed = new Map<string, ComputedInternal>()
       const warnings: string[] = []
 
       for (const node of project.nodes) {
+        if (!node.recipeId) {
+          warnings.push(`节点 ${node.id} 尚未选择配方`)
+          continue
+        }
         const recipe = repository.GetById<Recipe>(node.recipeId)
         if (!recipe) {
           warnings.push(`节点 ${node.id} 的配方 ${node.recipeId} 不存在`)
@@ -372,27 +637,140 @@ export class GtnhEngine {
   }
 
   private indexGoods(
-    object: SearchableGoods,
-    kind: 'item' | 'fluid'
+    object: RecipeObject,
+    kind: 'item' | 'fluid' | 'ore'
   ): IndexedGoods {
+    const summary = this.goodsSummary(object)
     return {
       object,
       id: object.id,
-      name: object.name,
-      normalizedName: normalize(object.name),
+      name: summary.name,
+      normalizedName: normalize(summary.name),
+      normalizedSearch: normalize(
+        `${summary.name} ${summary.mod} ${summary.tooltip ?? ''}`
+      ),
       kind
     }
   }
 
-  private searchGoods(query: string, limit: number): SearchItemResult[] {
+  private buildMachineIndex(repository: Repository): void {
+    const add = (item: Item, recipeType: string): void => {
+      const effectiveMultiblock = !isSingleBlockMachine(
+        item.name,
+        item.tooltip
+      )
+      const existing = this.machineById.get(item.id)
+      if (existing) {
+        existing.recipeTypes.add(recipeType)
+        existing.multiblock = effectiveMultiblock
+        return
+      }
+      const displayName = machineDisplayName(item.name)
+      const entry: IndexedMachine = {
+        item,
+        recipeTypes: new Set([recipeType]),
+        multiblock: effectiveMultiblock,
+        displayName,
+        normalizedSearch: normalize(
+          `${item.name} ${machineSearchText(item.name)} ${item.mod}`
+        )
+      }
+      this.machineById.set(item.id, entry)
+      this.machineIndex.push(entry)
+    }
+
+    for (const pointer of repository.recipeTypes) {
+      const recipeType = repository.GetObject(pointer, RecipeType)
+      for (const item of recipeType.singleblocks) {
+        add(item, recipeType.name)
+      }
+      for (const item of recipeType.multiblocks) {
+        add(item, recipeType.name)
+      }
+      if (recipeType.defaultCrafter) {
+        add(recipeType.defaultCrafter, recipeType.name)
+      }
+    }
+  }
+
+  private buildOreRecipeIndex(repository: Repository): void {
+    for (const pointer of repository.recipes) {
+      const recipe = repository.GetObject(pointer, Recipe)
+      for (const entry of recipe.items) {
+        if (!(entry.goods instanceof OreDict)) continue
+        const links = this.oreRecipeLinks.get(entry.goods.id) ?? {
+          production: new Set<string>(),
+          consumption: new Set<string>()
+        }
+        if (IO_INPUT.has(entry.type)) links.consumption.add(recipe.id)
+        if (IO_OUTPUT.has(entry.type)) links.production.add(recipe.id)
+        this.oreRecipeLinks.set(entry.goods.id, links)
+      }
+    }
+  }
+
+  private recipeIdsForGoods(
+    goods: GoodsSummary,
+    direction: 'input' | 'output'
+  ): Set<string> {
+    const repository = this.requireRepository()
+    const ids = new Set<string>()
+    if (goods.kind === 'ore') {
+      const links = this.oreRecipeLinks.get(goods.id)
+      const source = direction === 'input' ? links?.consumption : links?.production
+      for (const id of source ?? []) ids.add(id)
+      return ids
+    }
+
+    const object = repository.GetById<SearchableGoods>(goods.id)
+    if (!object) return ids
+    const pointers = direction === 'input' ? object.consumption : object.production
+    for (const pointer of pointers) {
+      ids.add(repository.GetObject(pointer, Recipe).id)
+    }
+    if (direction === 'input') {
+      for (const oreId of this.itemOreDicts.get(goods.id) ?? []) {
+        for (const id of this.oreRecipeLinks.get(oreId)?.consumption ?? []) {
+          ids.add(id)
+        }
+      }
+    }
+    return ids
+  }
+
+  private compactRecipeSummary(
+    id: string,
+    fixedCrafter?: MachineRef
+  ): SearchRecipeResult | null {
+    const repository = this.requireRepository()
+    const recipe = repository.GetById<Recipe>(id)
+    if (!recipe) return null
+    const inputs: GoodsSummary[] = []
+    const outputs: GoodsSummary[] = []
+    for (const entry of recipe.items) {
+      const goods = this.goodsSummary(entry.goods)
+      if (IO_INPUT.has(entry.type)) inputs.push(goods)
+      if (IO_OUTPUT.has(entry.type)) outputs.push(goods)
+    }
+    return {
+      id,
+      recipeType: recipe.recipeType.name,
+      category: recipe.recipeType.category,
+      durationTicks: recipe.gtRecipe?.durationTicks ?? 0,
+      voltage: recipe.gtRecipe?.voltage ?? 0,
+      nativeVoltageTier: recipe.gtRecipe?.voltageTier ?? 0,
+      outputs,
+      inputs,
+      crafters: fixedCrafter ? [fixedCrafter] : this.availableCrafters(recipe)
+    }
+  }
+
+  private searchGoodsEntries(query: string, limit: number): SearchItemResult[] {
     const repository = this.requireRepository()
     let candidates = this.goodsIndex
     if (query) {
       candidates = candidates.filter(
-        (entry) =>
-          entry.normalizedName.includes(query) ||
-          normalize(entry.object.tooltip ?? '').includes(query) ||
-          normalize(entry.object.mod).includes(query)
+        (entry) => entry.normalizedSearch.includes(query)
       )
     }
 
@@ -408,6 +786,14 @@ export class GtnhEngine {
     })
 
     return candidates.slice(0, limit).map((entry) => {
+      if (entry.kind === 'ore') {
+        return {
+          ...this.goodsSummary(entry.object),
+          productionRecipes: 0,
+          consumptionRecipes:
+            this.oreRecipeLinks.get(entry.id)?.consumption.size ?? 0
+        }
+      }
       const object = repository.GetById<SearchableGoods>(entry.id)
       return {
         ...this.goodsSummary(object ?? entry.object),
@@ -415,6 +801,26 @@ export class GtnhEngine {
         consumptionRecipes: object?.consumption.length ?? 0
       }
     })
+  }
+
+  private machineSummary(entry: IndexedMachine): MachineSummary {
+    return {
+      ...this.machineRef(entry),
+      recipeTypes: [...entry.recipeTypes],
+      recipeTypeCount: entry.recipeTypes.size,
+      hasModel: Boolean(machines[entry.item.name])
+    }
+  }
+
+  private machineRef(entry: IndexedMachine): MachineRef {
+    return {
+      id: entry.item.id,
+      name: entry.item.name,
+      displayName: entry.displayName,
+      iconId: entry.item.iconId,
+      mod: entry.item.mod,
+      multiblock: entry.multiblock
+    }
   }
 
   private searchRecipes(
@@ -427,6 +833,7 @@ export class GtnhEngine {
     const recipeIds = new Set<string>()
 
     for (const item of goods.slice(0, 20)) {
+      if (item.kind === 'ore') continue
       const object = repository.GetById<SearchableGoods>(item.id)
       if (!object) continue
       const pointers = mode === 'ingredient'
@@ -465,7 +872,8 @@ export class GtnhEngine {
           voltage: recipe.gtRecipe?.voltage ?? 0,
           nativeVoltageTier: recipe.gtRecipe?.voltageTier ?? 0,
           outputs: detail.outputs.map((port) => port.goods),
-          inputs: detail.inputs.map((port) => port.goods)
+          inputs: detail.inputs.map((port) => port.goods),
+          crafters: detail.availableCrafters
         }
       })
   }
@@ -494,58 +902,55 @@ export class GtnhEngine {
   }
 
   private availableCrafters(recipe: Recipe): RecipeDetail['availableCrafters'] {
-    const result = new Map<
-      string,
-      { id: string; name: string; iconId: number; multiblock: boolean }
-    >()
+    const result = new Map<string, MachineRef>()
     for (const item of recipe.recipeType.singleblocks) {
-      result.set(item.id, {
-        id: item.id,
-        name: item.name,
-        iconId: item.iconId,
-        multiblock: false
-      })
+      const indexed = this.machineById.get(item.id)
+      if (indexed) result.set(item.id, this.machineRef(indexed))
     }
     for (const item of recipe.recipeType.multiblocks) {
-      result.set(item.id, {
-        id: item.id,
-        name: item.name,
-        iconId: item.iconId,
-        multiblock: true
-      })
+      const indexed = this.machineById.get(item.id)
+      if (indexed) result.set(item.id, this.machineRef(indexed))
     }
     if (recipe.recipeType.defaultCrafter) {
       const item = recipe.recipeType.defaultCrafter
-      result.set(item.id, {
-        id: item.id,
-        name: item.name,
-        iconId: item.iconId,
-        multiblock: false
-      })
+      const indexed = this.machineById.get(item.id)
+      if (indexed) result.set(item.id, this.machineRef(indexed))
     }
     return Array.from(result.values())
   }
 
   private selectMachine(
     recipe: Recipe,
-    crafterId?: string
-  ): { crafter: Item | null; machine: Machine; hasModel: boolean } {
+    config?: GraphNode
+  ): {
+    crafter: Item | null
+    machine: Machine
+    hasModel: boolean
+    multiblock: boolean
+    compatible: boolean
+  } {
     const repository = this.requireRepository()
-    let crafter = crafterId ? repository.GetById<Item>(crafterId) : null
-    if (
-      crafter &&
-      !recipe.recipeType.multiblocks.some((item) => item.id === crafter!.id) &&
-      !recipe.recipeType.singleblocks.some((item) => item.id === crafter!.id) &&
-      recipe.recipeType.defaultCrafter?.id !== crafter.id
-    ) {
-      crafter = null
-    }
-    if (
-      crafter &&
-      !recipe.recipeType.multiblocks.some((item) => item.id === crafter!.id) &&
-      recipe.recipeType.singleblocks.length > 0
-    ) {
-      crafter = null
+    let crafter = config?.machine?.id
+      ? repository.GetById<Item>(config.machine.id)
+      : null
+    let multiblock = Boolean(config?.machine?.multiblock)
+    let compatible = Boolean(crafter)
+    if (crafter) {
+      const single = recipe.recipeType.singleblocks.some(
+        (item) => item.id === crafter!.id
+      )
+      const multi = recipe.recipeType.multiblocks.some(
+        (item) => item.id === crafter!.id
+      )
+      compatible =
+        single ||
+        multi ||
+        recipe.recipeType.defaultCrafter?.id === crafter.id
+      if (!compatible) {
+        crafter = null
+      } else {
+        multiblock = multi || this.machineById.get(crafter.id)?.multiblock || false
+      }
     }
 
     const canBeSingleblock = (() => {
@@ -569,16 +974,19 @@ export class GtnhEngine {
     const machine =
       (crafter ? machines[crafter.name] : null) ??
       (crafter ? notImplementedMachine : GetSingleBlockMachine(recipe.recipeType))
-    return { crafter, machine, hasModel }
+    if (!config?.machine && crafter) {
+      multiblock = this.machineById.get(crafter.id)?.multiblock ?? false
+    }
+    return { crafter, machine, hasModel, multiblock, compatible }
   }
 
   private buildRecipeModel(
     recipe: Recipe,
-    config: ProjectDocumentV1['nodes'][number] | undefined,
+    config: GraphNode | undefined,
     applyMachineRecipe: boolean
   ): ComputedInternal {
     const model = new RecipeModel(recipe)
-    const selected = this.selectMachine(recipe, config?.crafterId)
+    const selected = this.selectMachine(recipe, config)
     const machine = selected.machine
     model.crafter = selected.crafter?.id
     model.machineInfo = machine
@@ -657,6 +1065,11 @@ export class GtnhEngine {
     const durationTicks = phaseDriven ? recipe.gtRecipe!.durationTicks : 1200
     const durationMinutes = durationTicks / 1200
     const warnings: string[] = []
+    let invalid = false
+    if (config?.machine && !selected.compatible) {
+      invalid = true
+      warnings.push('所选机器不能执行当前配方')
+    }
     if (!phaseDriven) {
       warnings.push('该配方没有 GT 机器计时，按每台等效机器 1 次/分钟估算')
     }
@@ -692,8 +1105,11 @@ export class GtnhEngine {
             )
           )
       parallels = Math.min(maxParallels, machineParallels)
+      const parallelCapable =
+        machineParallels > 1 || Boolean(machine.ignoreParallelLimit)
       const configParallels = config?.overrides.parallels
       if (
+        parallelCapable &&
         configParallels !== undefined &&
         Number.isFinite(configParallels) &&
         configParallels > 0
@@ -706,9 +1122,10 @@ export class GtnhEngine {
 
       const tierDifference = model.voltageTier - gtRecipe.voltageTier
       if (tierDifference < 0) {
+        invalid = true
         warnings.push(`机器电压低于配方原始等级 ${voltageTier[gtRecipe.voltageTier]?.name ?? ''}`)
       }
-      const isSingleblock = !selected.crafter
+      const isSingleblock = !selected.multiblock
       const parallelOverclockLimits = Math.floor(
         Math.log2(Math.max(1, maxParallels / parallels)) / 2
       )
@@ -764,14 +1181,31 @@ export class GtnhEngine {
       ? {
           id: selected.crafter?.id ?? `singleblock:${recipe.recipeType.name}`,
           name: selected.crafter?.name ?? `${recipe.recipeType.name} (单方块)`,
+          displayName: config?.machine?.displayName ??
+            machineDisplayName(
+              selected.crafter?.name ?? recipe.recipeType.name
+            ),
+          multiblock: selected.multiblock,
           hasModel: selected.hasModel,
           fixedVoltageTier: machine.fixedVoltageTier === undefined
             ? undefined
             : model.voltageTier,
+          coilAvailable:
+            selected.multiblock &&
+            Object.keys(machine.choices ?? {}).some(
+              (key) => key === 'coilTier' || key === 'coils'
+            ),
+          parallelCapable:
+            phaseDriven &&
+            (machineParallels > 1 || Boolean(machine.ignoreParallelLimit)),
           choices: machine.choices
-            ? Object.entries(machine.choices).map(([key, choice]) =>
-                toMachineChoice(key, choice)
-              )
+            ? Object.entries(machine.choices)
+                .filter(
+                  ([key]) =>
+                    selected.multiblock ||
+                    (key !== 'coilTier' && key !== 'coils')
+                )
+                .map(([key, choice]) => toMachineChoice(key, choice))
             : [],
           info: machine.info ? GetParameter(machine.info, model) : undefined
         }
@@ -780,7 +1214,7 @@ export class GtnhEngine {
     const node: ComputedNode = {
       nodeId: '',
       recipeId: recipe.id,
-      valid: true,
+      valid: !invalid,
       warnings,
       machineInfo,
       recipesPerMinute: 0,
@@ -807,7 +1241,7 @@ export class GtnhEngine {
   private computeNode(
     nodeId: string,
     recipe: Recipe,
-    config: ProjectDocumentV1['nodes'][number]
+    config: GraphNode
   ): ComputedInternal {
     const result = this.buildRecipeModel(recipe, config, true)
     const node = result.publicNode
@@ -817,6 +1251,14 @@ export class GtnhEngine {
 
     let recipesPerMinute = 0
     let machineCount = config.machineCount
+    if (!node.valid) {
+      node.machineCount = 0
+      node.recommendedMachineCount = 0
+      node.utilization = 0
+      node.euPerTick = 0
+      for (const port of node.ports) port.ratePerMinute = 0
+      return result
+    }
 
     if (config.rateMode === 'target' && config.targetPortKey) {
       const target = result.ports.get(config.targetPortKey)
@@ -877,7 +1319,17 @@ export class GtnhEngine {
         (choice) => choice.key === 'coilTier' || choice.key === 'coils'
       )
     ) {
-      this.validateHeat(recipe, config, node)
+      const effectiveChoices = Object.fromEntries(
+        node.machineInfo.choices.map((choice) => [
+          choice.key,
+          config.choices[choice.key] ?? choice.min
+        ])
+      )
+      this.validateHeat(
+        recipe,
+        { ...config, choices: effectiveChoices },
+        node
+      )
     }
 
     return result
@@ -885,11 +1337,11 @@ export class GtnhEngine {
 
   private computeFactor(
     recipe: Recipe,
-    config: ProjectDocumentV1['nodes'][number],
+    config: GraphNode,
     durationTicks: number
   ): { overclockFactor: number; powerFactor: number } {
     const model = new RecipeModel(recipe)
-    const selected = this.selectMachine(recipe, config.crafterId)
+    const selected = this.selectMachine(recipe, config)
     const machine = selected.machine
     model.voltageTier = config.voltageTier
     model.choices = { ...config.choices }
@@ -927,7 +1379,7 @@ export class GtnhEngine {
     const tierDifference = model.voltageTier - gtRecipe.voltageTier
     const overclockTiers = Math.max(
       0,
-      !selected.crafter
+      !selected.multiblock
         ? tierDifference
         : Math.min(
             tierDifference,
@@ -968,7 +1420,7 @@ export class GtnhEngine {
 
   private validateHeat(
     recipe: Recipe,
-    config: ProjectDocumentV1['nodes'][number],
+    config: GraphNode,
     node: ComputedNode
   ): void {
     const coilTier = config.choices.coilTier ?? config.choices.coils
@@ -1017,7 +1469,7 @@ export class GtnhEngine {
     return ''
   }
 
-  private findCycles(project: ProjectDocumentV1): string[][] {
+  private findCycles(project: ProjectDocument): string[][] {
     const adjacency = new Map<string, string[]>()
     for (const node of project.nodes) adjacency.set(node.id, [])
     for (const edge of project.edges) {

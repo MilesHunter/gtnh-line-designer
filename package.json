@@ -1,6 +1,6 @@
 {
   "name": "gtnh-line-designer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Offline visual production-line designer for GregTech: New Horizons",
   "main": "out/main/index.js",
   "author": "GTNH Skill Workspace",
@@ -21,6 +21,7 @@
     "test": "vitest run",
     "integrations:build": "node scripts/build-integrations.mjs",
     "verify:portable": "node scripts/verify-portable-archive.mjs",
+    "smoke:ui": "npm run build && node scripts/ui-smoke.mjs",
     "package": "npm run build && node node_modules/electron/install.js && npm run integrations:build && electron-builder --win dir --publish never && node scripts/package-portable.mjs && npm run verify:portable"
   },
   "dependencies": {

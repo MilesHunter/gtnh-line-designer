@@ -6,6 +6,8 @@ import { formatPower, formatRate } from '../lib/project'
 interface AnalysisPanelProps {
   result: SolveResult | null
   timeUnit: 'hour' | 'min' | 'sec' | 'tick'
+  stale?: boolean
+  invalidNodeCount?: number
 }
 
 const VOLTAGE_NAMES = [
@@ -27,10 +29,12 @@ const VOLTAGE_NAMES = [
 
 export function AnalysisPanel({
   result,
-  timeUnit
+  timeUnit,
+  stale = false,
+  invalidNodeCount = 0
 }: AnalysisPanelProps): React.JSX.Element {
   return (
-    <section className="analysis-panel">
+    <section className={`analysis-panel ${stale ? 'stale' : ''}`}>
       <div className="analysis-group">
         <header>
           <ArrowDownToLine size={15} />
@@ -102,9 +106,17 @@ export function AnalysisPanel({
         <header>
           <AlertTriangle size={15} />
           <strong>求解状态</strong>
-          <span>{result?.status ?? '未计算'}</span>
+          <span>
+            {invalidNodeCount
+              ? `${invalidNodeCount} 个错误`
+              : stale
+                ? '结果已过期'
+                : result?.status ?? '未计算'}
+          </span>
         </header>
         <div className="analysis-message">
+          {invalidNodeCount > 0 && <p>请先修复画布中高亮的节点或连线。</p>}
+          {stale && <p>以下为上一次计算结果，修改参数后需重新计算。</p>}
           {!result && <p>尚未计算。</p>}
           {result?.error && <p>{result.error}</p>}
           {result &&

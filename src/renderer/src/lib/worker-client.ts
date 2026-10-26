@@ -1,5 +1,12 @@
 import type {
-  ProjectDocumentV1,
+  ComputedNode,
+  ExactRecipeSearchRequest,
+  ExactRecipeSearchResponse,
+  MachineSearchResponse,
+  MachineSummary,
+  GraphNode,
+  ProjectDocument,
+  ProjectValidationResult,
   RecipeDetail,
   RecipeSearchMode,
   RecipeSearchResponse,
@@ -63,7 +70,33 @@ export class GtnhWorkerClient {
     return this.request({ id: 0, type: 'recipe', recipeId })
   }
 
-  solve(project: ProjectDocumentV1, revision: number): Promise<SolveResult> {
+  searchGoods(query: string, limit = 40): Promise<RecipeSearchResponse> {
+    return this.request({ id: 0, type: 'goods-search', query, limit })
+  }
+
+  searchMachines(query: string, limit = 80): Promise<MachineSearchResponse> {
+    return this.request({ id: 0, type: 'machine-search', query, limit })
+  }
+
+  searchExactRecipes(
+    request: ExactRecipeSearchRequest
+  ): Promise<ExactRecipeSearchResponse> {
+    return this.request({ id: 0, type: 'exact-recipe-search', request })
+  }
+
+  getMachine(machineId: string): Promise<MachineSummary | null> {
+    return this.request({ id: 0, type: 'machine', machineId })
+  }
+
+  preview(node: GraphNode): Promise<ComputedNode | null> {
+    return this.request({ id: 0, type: 'preview', node })
+  }
+
+  validate(project: ProjectDocument): Promise<ProjectValidationResult> {
+    return this.request({ id: 0, type: 'validate', project })
+  }
+
+  solve(project: ProjectDocument, revision: number): Promise<SolveResult> {
     return this.request({ id: 0, type: 'solve', project, revision })
   }
 

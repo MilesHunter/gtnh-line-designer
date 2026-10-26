@@ -5,6 +5,7 @@ data/
 workspace/
 logs/
 coverage/
+artifacts/
 .cache/
 resources/integrations/
 *.tsbuildinfo

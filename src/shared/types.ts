@@ -165,6 +165,72 @@ export interface PortRef {
   portKey: string
 }
 
+export interface MachineRef {
+  id: string
+  name: string
+  displayName: string
+  iconId: number
+  mod: string
+  multiblock: boolean
+}
+
+export interface MachineSummary extends MachineRef {
+  recipeTypes: string[]
+  recipeTypeCount: number
+  hasModel: boolean
+}
+
+export interface GraphNode {
+  id: string
+  machine: MachineRef
+  recipeId?: string
+  position: {
+    x: number
+    y: number
+  }
+  rateMode: RateMode
+  machineCount: number
+  targetPortKey?: string
+  targetRate: number
+  voltageTier: number
+  choices: Record<string, number>
+  overrides: {
+    speedMultiplier: number
+    powerMultiplier: number
+    parallels?: number
+  }
+  label?: string
+}
+
+export interface GraphEdge {
+  id: string
+  source: PortRef
+  target: PortRef
+  priority: number
+  enabled: boolean
+}
+
+export interface ProjectDocument {
+  schemaVersion: 2
+  name: string
+  data: {
+    ref: string
+    commit: string
+    dataVersion: number
+  }
+  timeUnit: TimeUnit
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+  viewport: {
+    x: number
+    y: number
+    zoom: number
+  }
+  createdAt: string
+  updatedAt: string
+}
+
+/** Legacy project shape accepted by the migration loader. */
 export interface GraphNodeV1 {
   id: string
   recipeId: string
@@ -187,14 +253,6 @@ export interface GraphNodeV1 {
   label?: string
 }
 
-export interface GraphEdgeV1 {
-  id: string
-  source: PortRef
-  target: PortRef
-  priority: number
-  enabled: boolean
-}
-
 export interface ProjectDocumentV1 {
   schemaVersion: 1
   name: string
@@ -205,7 +263,7 @@ export interface ProjectDocumentV1 {
   }
   timeUnit: TimeUnit
   nodes: GraphNodeV1[]
-  edges: GraphEdgeV1[]
+  edges: GraphEdge[]
   viewport: {
     x: number
     y: number
@@ -249,12 +307,7 @@ export interface RecipeDetail {
   metadata: Record<string, number>
   inputs: RecipePort[]
   outputs: RecipePort[]
-  availableCrafters: Array<{
-    id: string
-    name: string
-    iconId: number
-    multiblock: boolean
-  }>
+  availableCrafters: MachineRef[]
   defaultCrafterId?: string
   machineHasModel: boolean
 }
@@ -275,12 +328,32 @@ export interface SearchRecipeResult {
   nativeVoltageTier: number
   outputs: GoodsSummary[]
   inputs: GoodsSummary[]
+  crafters: MachineRef[]
 }
 
 export interface RecipeSearchResponse {
   items: SearchItemResult[]
   recipes: SearchRecipeResult[]
   total: number
+}
+
+export interface MachineSearchResponse {
+  machines: MachineSummary[]
+  total: number
+}
+
+export interface ExactRecipeSearchRequest {
+  input?: GoodsSummary
+  output?: GoodsSummary
+  machineId?: string
+  offset?: number
+  limit?: number
+}
+
+export interface ExactRecipeSearchResponse {
+  recipes: SearchRecipeResult[]
+  total: number
+  hasMore: boolean
 }
 
 export interface MachineChoice {
@@ -295,15 +368,19 @@ export interface MachineChoice {
 export interface MachineInfo {
   id: string
   name: string
+  displayName: string
+  multiblock: boolean
   hasModel: boolean
   fixedVoltageTier?: number
+  coilAvailable: boolean
+  parallelCapable: boolean
   choices: MachineChoice[]
   info?: string
 }
 
 export interface ComputedNode {
   nodeId: string
-  recipeId: string
+  recipeId?: string
   valid: boolean
   warnings: string[]
   machineInfo: MachineInfo | null
@@ -319,6 +396,18 @@ export interface ComputedNode {
   ports: Array<RecipePort & {
     ratePerMinute: number
   }>
+}
+
+export interface ProjectValidationIssue {
+  nodeId?: string
+  edgeId?: string
+  message: string
+}
+
+export interface ProjectValidationResult {
+  valid: boolean
+  issues: ProjectValidationIssue[]
+  removedEdgeIds: string[]
 }
 
 export interface FlowSummary {
@@ -350,8 +439,28 @@ export type WorkerRequest =
       limit?: number
       mode?: RecipeSearchMode
     }
+  | {
+      id: number
+      type: 'goods-search'
+      query: string
+      limit?: number
+    }
+  | {
+      id: number
+      type: 'machine-search'
+      query: string
+      limit?: number
+    }
+  | {
+      id: number
+      type: 'exact-recipe-search'
+      request: ExactRecipeSearchRequest
+    }
+  | { id: number; type: 'machine'; machineId: string }
   | { id: number; type: 'recipe'; recipeId: string }
-  | { id: number; type: 'solve'; revision: number; project: ProjectDocumentV1 }
+  | { id: number; type: 'preview'; node: GraphNode }
+  | { id: number; type: 'validate'; project: ProjectDocument }
+  | { id: number; type: 'solve'; revision: number; project: ProjectDocument }
 
 export type WorkerResponse =
   | {
@@ -366,7 +475,17 @@ export type WorkerResponse =
       }
     }
   | { id: number; type: 'search'; result: RecipeSearchResponse }
+  | { id: number; type: 'goods-search'; result: RecipeSearchResponse }
+  | { id: number; type: 'machine-search'; result: MachineSearchResponse }
+  | {
+      id: number
+      type: 'exact-recipe-search'
+      result: ExactRecipeSearchResponse
+    }
+  | { id: number; type: 'machine'; result: MachineSummary | null }
   | { id: number; type: 'recipe'; result: RecipeDetail | null }
+  | { id: number; type: 'preview'; result: ComputedNode | null }
+  | { id: number; type: 'validate'; result: ProjectValidationResult }
   | { id: number; type: 'solve'; result: SolveResult }
   | { id: number; type: 'error'; error: string }
 

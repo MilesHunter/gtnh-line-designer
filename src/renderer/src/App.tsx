@@ -35,49 +35,70 @@ import type {
   CachedDataVersion,
   DataStatus,
   DownloadProgress,
-  GraphEdgeV1,
-  GraphNodeV1,
-  LocalImportProgress,
+  ExactRecipeSearchRequest,
+  MachineRef,
+  MachineSearchResponse,
+  ProjectDocument,
   ProjectDocumentV1,
   RecipeDetail,
-  RecipeSearchMode,
   RecipeSearchResponse
 } from '../../shared/types'
 import { GtnhWorkerClient } from './lib/worker-client'
+import {
+  isProjectDocument,
+  isProjectDocumentV1,
+  migrateProjectV1
+} from './lib/project'
 import { RecipeNode, type RecipeFlowNode } from './components/RecipeNode'
 import { RecipePalette } from './components/RecipePalette'
 import { Inspector } from './components/Inspector'
 import { AnalysisPanel } from './components/AnalysisPanel'
+import { CalculationModal } from './components/CalculationModal'
 import { VersionPicker } from './components/VersionPicker'
-import { useProjectStore } from './store/project-store'
+import { issueMap, useProjectStore } from './store/project-store'
 
 const nodeTypes: NodeTypes = {
-  recipe: RecipeNode
+  machine: RecipeNode
 }
 
-const MISSING_RECIPE: RecipeDetail = {
-  id: 'missing',
-  recipeType: '缺失配方',
-  category: 'unknown',
-  durationTicks: 0,
-  voltage: 0,
-  amperage: 0,
-  nativeVoltageTier: 0,
-  specialValue: 0,
-  metadata: {},
-  inputs: [],
-  outputs: [],
-  availableCrafters: [],
-  machineHasModel: false
+const EMPTY_GOODS_RESPONSE: RecipeSearchResponse = {
+  items: [],
+  recipes: [],
+  total: 0
+}
+
+const EMPTY_MACHINE_RESPONSE: MachineSearchResponse = {
+  machines: [],
+  total: 0
+}
+
+function nodePreviewKey(node: ProjectDocument['nodes'][number]): string {
+  return JSON.stringify({
+    id: node.id,
+    recipeId: node.recipeId,
+    machineId: node.machine.id,
+    machineKind: node.machine.multiblock,
+    rateMode: node.rateMode,
+    machineCount: node.machineCount,
+    targetPortKey: node.targetPortKey,
+    targetRate: node.targetRate,
+    voltageTier: node.voltageTier,
+    choices: node.choices,
+    overrides: node.overrides
+  })
+}
+
+function waitFrame(): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, 80))
 }
 
 function Workspace(): React.JSX.Element {
   const workerRef = useRef<GtnhWorkerClient | null>(null)
+  const workerUrlRef = useRef('gtnh-data://current/data.bin.gz')
+  const calculationTokenRef = useRef(0)
   const [status, setStatus] = useState<DataStatus | null>(null)
   const [downloadProgress, setDownloadProgress] =
     useState<DownloadProgress | null>(null)
-  const [localProgress, setLocalProgress] =
-    useState<LocalImportProgress | null>(null)
   const [downloading, setDownloading] = useState(false)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [showVersionPicker, setShowVersionPicker] = useState(false)
@@ -88,21 +109,38 @@ function Workspace(): React.JSX.Element {
     recipes: number
   } | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [calculationOpen, setCalculationOpen] = useState(false)
+  const [calculationStage, setCalculationStage] = useState(0)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const calculationStartedAtRef = useRef(0)
   const flow = useReactFlow<RecipeFlowNode, Edge>()
+  const flowNodeCacheRef = useRef(new Map<string, RecipeFlowNode>())
+  const previewKeyCacheRef = useRef(
+    new Map<string, { node: ProjectDocument['nodes'][number]; key: string }>()
+  )
+  const previewedKeysRef = useRef(new Map<string, string>())
 
   const project = useProjectStore((state) => state.project)
   const recipes = useProjectStore((state) => state.recipes)
+  const previews = useProjectStore((state) => state.previews)
   const selectedNodeId = useProjectStore((state) => state.selectedNodeId)
   const selectedEdgeId = useProjectStore((state) => state.selectedEdgeId)
   const solveResult = useProjectStore((state) => state.solveResult)
+  const solveStale = useProjectStore((state) => state.solveStale)
   const solving = useProjectStore((state) => state.solving)
   const dirty = useProjectStore((state) => state.dirty)
   const currentPath = useProjectStore((state) => state.currentPath)
+  const invalidNodes = useProjectStore((state) => state.invalidNodes)
+  const invalidEdges = useProjectStore((state) => state.invalidEdges)
 
   const initializeProject = useProjectStore((state) => state.initializeProject)
   const loadProject = useProjectStore((state) => state.loadProject)
   const registerRecipe = useProjectStore((state) => state.registerRecipe)
+  const setPreviews = useProjectStore((state) => state.setPreviews)
+  const clearPreviews = useProjectStore((state) => state.clearPreviews)
   const addNode = useProjectStore((state) => state.addNode)
+  const setNodeRecipe = useProjectStore((state) => state.setNodeRecipe)
+  const setNodeMachine = useProjectStore((state) => state.setNodeMachine)
   const removeNodes = useProjectStore((state) => state.removeNodes)
   const duplicateNodes = useProjectStore((state) => state.duplicateNodes)
   const updateNode = useProjectStore((state) => state.updateNode)
@@ -114,13 +152,119 @@ function Workspace(): React.JSX.Element {
   const setViewport = useProjectStore((state) => state.setViewport)
   const setTimeUnit = useProjectStore((state) => state.setTimeUnit)
   const pushHistory = useProjectStore((state) => state.pushHistory)
+  const commitHistory = useProjectStore((state) => state.commitHistory)
   const setSolving = useProjectStore((state) => state.setSolving)
   const setSolveResult = useProjectStore((state) => state.setSolveResult)
-  const invalidateSolve = useProjectStore((state) => state.invalidateSolve)
+  const setValidation = useProjectStore((state) => state.setValidation)
+  const clearValidation = useProjectStore((state) => state.clearValidation)
   const setCurrentPath = useProjectStore((state) => state.setCurrentPath)
   const markSaved = useProjectStore((state) => state.markSaved)
   const undo = useProjectStore((state) => state.undo)
   const redo = useProjectStore((state) => state.redo)
+
+  const resetWorker = useCallback(async (showErrors = true): Promise<void> => {
+    workerRef.current?.dispose()
+    const worker = new GtnhWorkerClient()
+    workerRef.current = worker
+    try {
+      const counts = await worker.load(workerUrlRef.current)
+      setDataCounts({
+        items: counts.items,
+        fluids: counts.fluids,
+        recipes: counts.recipes
+      })
+      setWorkerLoaded(true)
+    } catch (error) {
+      setWorkerLoaded(false)
+      if (showErrors) {
+        setDownloadError(error instanceof Error ? error.message : String(error))
+        setShowVersionPicker(true)
+      }
+      throw error
+    }
+  }, [])
+
+  const hydrateProject = useCallback(
+    async (raw: unknown): Promise<ProjectDocument> => {
+      if (isProjectDocument(raw)) return raw
+      if (!isProjectDocumentV1(raw)) {
+        throw new Error('不是有效的 .gtnhgraph 项目')
+      }
+      const legacy = raw as ProjectDocumentV1
+      const worker = workerRef.current
+      if (!worker) throw new Error('GTNH 数据尚未加载')
+      const recipeIds = [...new Set(legacy.nodes.map((node) => node.recipeId))]
+      const details = new Map<string, RecipeDetail | null>()
+      const resolved = await Promise.all(
+        recipeIds.map(async (recipeId) => {
+          const detail = await worker.getRecipe(recipeId)
+          return [recipeId, detail] as const
+        })
+      )
+      for (const [recipeId, detail] of resolved) details.set(recipeId, detail)
+
+      const machineByNode: Record<string, MachineRef> = {}
+      for (const node of legacy.nodes) {
+        const detail = details.get(node.recipeId)
+        const selected =
+          detail?.availableCrafters.find((entry) => entry.id === node.crafterId) ??
+          detail?.availableCrafters.find(
+            (entry) => entry.id === detail.defaultCrafterId
+          ) ??
+          detail?.availableCrafters[0]
+        if (selected) {
+          machineByNode[node.id] = selected
+        } else if (node.crafterId) {
+          const machine = await worker.getMachine(node.crafterId)
+          if (machine) machineByNode[node.id] = machine
+        }
+      }
+      return migrateProjectV1(legacy, machineByNode)
+    },
+    []
+  )
+
+  const loadWorkerData = useCallback(async (): Promise<void> => {
+    if (!workerRef.current) workerRef.current = new GtnhWorkerClient()
+    setWorkerLoaded(false)
+    try {
+      await resetWorker()
+      const current = useProjectStore.getState().project
+      let restored = false
+      if (current.nodes.length === 0) {
+        const autosave = await window.gtnh.readAutosave()
+        if (autosave) {
+          try {
+            const parsed = JSON.parse(autosave) as unknown
+            const restoredProject = await hydrateProject(parsed)
+            if (
+              restoredProject.nodes.length > 0 &&
+              restoredProject.data.commit === (status?.selected?.commit ?? '')
+            ) {
+              previewedKeysRef.current.clear()
+              loadProject(restoredProject)
+              restored = true
+              setToast('已恢复上次自动保存')
+            }
+          } catch {
+            // Corrupt or incompatible autosaves should not block startup.
+          }
+        }
+      }
+      if (!restored && !current.data.commit && status?.selected) {
+        initializeProject(status.selected)
+      }
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : String(error))
+      setShowVersionPicker(true)
+    }
+  }, [
+    hydrateProject,
+    initializeProject,
+    loadProject,
+    resetWorker,
+    status?.selected
+  ])
 
   useEffect(() => {
     if (!workerRef.current) workerRef.current = new GtnhWorkerClient()
@@ -129,7 +273,6 @@ function Workspace(): React.JSX.Element {
       if (next.stage === 'error') setDownloadError(next.message ?? '下载失败')
     })
     const unsubscribeLocal = window.gtnh.onLocalImportProgress((next) => {
-      setLocalProgress(next)
       setStatus((current) =>
         current ? { ...current, localImport: next } : current
       )
@@ -143,161 +286,267 @@ function Workspace(): React.JSX.Element {
     }
   }, [])
 
-  const loadWorkerData = useCallback(async () => {
-    if (!workerRef.current) return
-    setWorkerLoaded(false)
-    try {
-      const counts = await workerRef.current.load('gtnh-data://current/data.bin.gz')
-      setDataCounts({
-        items: counts.items,
-        fluids: counts.fluids,
-        recipes: counts.recipes
-      })
-      setWorkerLoaded(true)
-      const current = useProjectStore.getState().project
-      let restored = false
-      if (current.nodes.length === 0) {
-        const autosave = await window.gtnh.readAutosave()
-        if (autosave) {
-          try {
-            const restoredProject = JSON.parse(autosave) as ProjectDocumentV1
-            if (
-              restoredProject.schemaVersion === 1 &&
-              restoredProject.nodes.length > 0 &&
-              restoredProject.data.commit === (status?.selected?.commit ?? '')
-            ) {
-              loadProject(restoredProject)
-              restored = true
-              setToast('已恢复上次自动保存')
-            }
-          } catch {
-            // A corrupt autosave should not prevent startup.
-          }
-        }
-      }
-      if (!restored && !current.data.commit && status?.selected) {
-        initializeProject(status.selected)
-      }
-    } catch (error) {
-      setWorkerLoaded(false)
-      setDownloadError(error instanceof Error ? error.message : String(error))
-      setShowVersionPicker(true)
-    }
-  }, [initializeProject, loadProject, status?.selected])
-
   useEffect(() => {
     if (status?.selected && !workerLoaded) void loadWorkerData()
   }, [status?.selected, workerLoaded, loadWorkerData])
 
-  const calculationKey = useMemo(
+  useEffect(() => {
+    if (!calculationOpen) return
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(
+        (Date.now() - calculationStartedAtRef.current) / 1000
+      )
+    }, 100)
+    return () => window.clearInterval(timer)
+  }, [calculationOpen])
+
+  const missingRecipeKey = useMemo(
     () =>
-      JSON.stringify({
-        nodes: project.nodes.map(({ position, ...node }) => {
-          void position
-          return node
-        }),
-        edges: project.edges
-      }),
-    [project.nodes, project.edges]
+      project.nodes
+        .map((node) => node.recipeId)
+        .filter((recipeId): recipeId is string => Boolean(recipeId && !recipes[recipeId]))
+        .join('|'),
+    [project.nodes, recipes]
   )
 
-  const solveKeyRef = useRef(calculationKey)
-  const solveRequestRef = useRef(0)
-
   useEffect(() => {
-    if (solveKeyRef.current === calculationKey) return
-    solveKeyRef.current = calculationKey
-    solveRequestRef.current++
-    invalidateSolve()
-  }, [calculationKey, invalidateSolve])
-
-  const calculateProduction = useCallback(async () => {
-    if (
-      !workerLoaded ||
-      !workerRef.current ||
-      solving ||
-      !project.nodes.length
-    ) {
-      return
-    }
-    const key = calculationKey
-    const revision = Date.now()
-    const requestId = ++solveRequestRef.current
-    setSolving(true)
-    try {
-      const result = await workerRef.current.solve(
-        useProjectStore.getState().project,
-        revision
-      )
-      if (
-        result.revision === revision &&
-        solveRequestRef.current === requestId &&
-        solveKeyRef.current === key
-      ) {
-        setSolveResult(result)
-      }
-    } catch (error) {
-      if (solveRequestRef.current === requestId) {
-        setToast(error instanceof Error ? error.message : String(error))
-      }
-    } finally {
-      if (solveRequestRef.current === requestId) setSolving(false)
-    }
-  }, [
-    calculationKey,
-    project.nodes.length,
-    setSolveResult,
-    setSolving,
-    solving,
-    workerLoaded
-  ])
-
-  useEffect(() => {
-    if (!workerLoaded) return
-    const missing = project.nodes
-      .map((node) => node.recipeId)
-      .filter((recipeId) => !recipes[recipeId])
-    if (!missing.length || !workerRef.current) return
-    void Promise.all(missing.map((recipeId) => workerRef.current!.getRecipe(recipeId)))
+    if (!workerLoaded || !workerRef.current || !missingRecipeKey) return
+    const recipeIds = missingRecipeKey.split('|')
+    void Promise.all(
+      recipeIds.map((recipeId) => workerRef.current!.getRecipe(recipeId))
+    )
       .then((details) => {
         for (const detail of details) {
           if (detail) registerRecipe(detail)
         }
       })
-  }, [project.nodes, recipes, registerRecipe, workerLoaded])
+      .catch(() => {
+        // A worker restart can invalidate an in-flight detail request.
+      })
+  }, [missingRecipeKey, registerRecipe, workerLoaded])
+
+  useEffect(() => {
+    if (!workerLoaded || !workerRef.current) return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      const worker = workerRef.current
+      if (!worker) return
+      const nodes = useProjectStore.getState().project.nodes
+      const cache = previewKeyCacheRef.current
+      const used = new Set<string>()
+      const changed = nodes.filter((node) => {
+        used.add(node.id)
+        const cached = cache.get(node.id)
+        const key = cached?.node === node ? cached.key : nodePreviewKey(node)
+        if (cached?.node !== node) cache.set(node.id, { node, key })
+        return key !== undefined && previewedKeysRef.current.get(node.id) !== key
+      })
+      for (const id of cache.keys()) {
+        if (!used.has(id)) cache.delete(id)
+      }
+      if (!changed.length) return
+      void (async () => {
+        for (let offset = 0; offset < changed.length; offset += 16) {
+          if (cancelled) return
+          const batch = changed.slice(offset, offset + 16)
+          const updates: Record<
+            string,
+            Awaited<ReturnType<typeof worker.preview>>
+          > = {}
+          await Promise.all(
+            batch.map(async (node) => {
+              if (!node.recipeId) {
+                updates[node.id] = null
+                return
+              }
+              try {
+                updates[node.id] = await worker.preview(node)
+              } catch {
+                updates[node.id] = null
+              }
+            })
+          )
+          if (!cancelled) {
+            setPreviews(updates)
+            for (const node of batch) {
+              const key = previewKeyCacheRef.current.get(node.id)?.key
+              if (key) previewedKeysRef.current.set(node.id, key)
+            }
+          }
+        }
+      })()
+    }, 120)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [project.nodes, setPreviews, workerLoaded])
+
+  const calculateProduction = useCallback(async () => {
+    if (!workerLoaded || !workerRef.current || solving || !project.nodes.length) {
+      return
+    }
+    const token = ++calculationTokenRef.current
+    const worker = workerRef.current
+    const snapshot = structuredClone(useProjectStore.getState().project)
+    calculationStartedAtRef.current = Date.now()
+    setElapsedSeconds(0)
+    setCalculationStage(0)
+    setCalculationOpen(true)
+    setSolving(true)
+    try {
+      let validation = await worker.validate(snapshot)
+      if (token !== calculationTokenRef.current) return
+      if (validation.removedEdgeIds.length) {
+        const removed = new Set(validation.removedEdgeIds)
+        removeEdges(validation.removedEdgeIds, false)
+        snapshot.edges = snapshot.edges.filter((edge) => !removed.has(edge.id))
+        validation = await worker.validate(snapshot)
+        if (token !== calculationTokenRef.current) return
+      }
+      if (!validation.valid) {
+        const mapped = issueMap(validation.issues)
+        setValidation(mapped.nodes, mapped.edges)
+        setCalculationOpen(false)
+        setSolving(false)
+        const firstNode = Object.keys(mapped.nodes)[0]
+        if (firstNode) {
+          setSelection(firstNode, null)
+          const node = useProjectStore
+            .getState()
+            .project.nodes.find((entry) => entry.id === firstNode)
+          if (node) {
+            void flow.setCenter(node.position.x + 180, node.position.y + 120, {
+              zoom: 1,
+              duration: 260
+            })
+          }
+        }
+        setToast(
+          validation.issues[0]?.message
+            ? `无法计算：${validation.issues[0].message}`
+            : '存在无效节点或连线'
+        )
+        return
+      }
+
+      clearValidation()
+      setCalculationStage(1)
+      await waitFrame()
+      if (token !== calculationTokenRef.current) return
+      setCalculationStage(2)
+      const revision = Date.now()
+      const result = await worker.solve(snapshot, revision)
+      if (token !== calculationTokenRef.current) return
+      setCalculationStage(3)
+      await waitFrame()
+      if (token !== calculationTokenRef.current) return
+      setSolveResult(result)
+      setCalculationOpen(false)
+    } catch (error) {
+      if (token !== calculationTokenRef.current) return
+      setCalculationOpen(false)
+      setToast(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (token === calculationTokenRef.current) setSolving(false)
+    }
+  }, [
+    clearValidation,
+    flow,
+    project.nodes.length,
+    removeEdges,
+    setSelection,
+    setSolveResult,
+    setSolving,
+    setValidation,
+    solving,
+    workerLoaded
+  ])
+
+  const cancelCalculation = useCallback(() => {
+    calculationTokenRef.current++
+    setCalculationOpen(false)
+    setSolving(false)
+    setToast('计算已取消')
+    void resetWorker(false).catch(() => {
+      setWorkerLoaded(false)
+      setShowVersionPicker(true)
+    })
+  }, [resetWorker, setSolving])
 
   useEffect(() => {
     if (!workerLoaded || !dirty) return
     const timer = window.setInterval(() => {
-      void window.gtnh.autosaveProject(JSON.stringify(useProjectStore.getState().project, null, 2))
+      void window.gtnh.autosaveProject(
+        JSON.stringify(useProjectStore.getState().project, null, 2)
+      )
     }, 8000)
     return () => window.clearInterval(timer)
   }, [workerLoaded, dirty])
 
+  const selectNode = useCallback(
+    (nodeId: string) => setSelection(nodeId, null),
+    [setSelection]
+  )
+
   const flowNodes = useMemo<RecipeFlowNode[]>(
-    () =>
-      project.nodes.map((node) => ({
-        id: node.id,
-        type: 'recipe',
-        position: node.position,
-        selected: node.id === selectedNodeId,
-        data: {
-          graphNode: node,
-          detail: recipes[node.recipeId] ?? { ...MISSING_RECIPE, id: node.recipeId },
-          computed: solveResult?.nodes[node.id],
-          timeUnit: project.timeUnit,
-          onUpdate: (patch) => updateNode(node.id, patch),
-          onSelect: () => setSelection(node.id, null)
+    () => {
+      const cache = flowNodeCacheRef.current
+      const used = new Set<string>()
+      const next = project.nodes.map((node): RecipeFlowNode => {
+        used.add(node.id)
+        const detail = node.recipeId ? recipes[node.recipeId] : undefined
+        const preview = previews[node.id]
+        const computed = solveStale ? undefined : solveResult?.nodes[node.id]
+        const invalidReasons = invalidNodes[node.id]
+        const selected = node.id === selectedNodeId
+        const cached = cache.get(node.id)
+        if (
+          cached &&
+          cached.position === node.position &&
+          cached.selected === selected &&
+          cached.data.graphNode === node &&
+          cached.data.detail === detail &&
+          cached.data.preview === preview &&
+          cached.data.computed === computed &&
+          cached.data.timeUnit === project.timeUnit &&
+          cached.data.invalidReasons === invalidReasons
+        ) {
+          return cached
         }
-      })),
+        const flowNode: RecipeFlowNode = {
+          id: node.id,
+          type: 'machine',
+          position: node.position,
+          selected,
+          data: {
+            graphNode: node,
+            detail,
+            preview,
+            computed,
+            timeUnit: project.timeUnit,
+            invalidReasons,
+            onSelect: selectNode
+          }
+        }
+        cache.set(node.id, flowNode)
+        return flowNode
+      })
+      for (const id of cache.keys()) {
+        if (!used.has(id)) cache.delete(id)
+      }
+      return next
+    },
     [
+      invalidNodes,
+      previews,
       project.nodes,
       project.timeUnit,
       recipes,
       selectedNodeId,
-      setSelection,
+      selectNode,
       solveResult,
-      updateNode
+      solveStale
     ]
   )
 
@@ -315,21 +564,38 @@ function Workspace(): React.JSX.Element {
           ? `${(solveResult.edgeFlows[edge.id] ?? 0).toFixed(2)}/min`
           : undefined,
         labelShowBg: true,
-        labelBgStyle: { fill: '#171b22', fillOpacity: 0.95 },
-        labelStyle: { fill: '#b8c2d0', fontSize: 10 },
+        labelBgStyle: {
+          fill: '#171b22',
+          fillOpacity: solveStale ? 0.6 : 0.95
+        },
+        labelStyle: {
+          fill: solveStale ? '#6e7887' : '#b8c2d0',
+          fontSize: 10
+        },
         style: {
-          stroke: edge.enabled ? '#55b899' : '#5d6572',
-          strokeWidth: edge.enabled ? 1.8 : 1,
-          strokeDasharray: edge.enabled ? undefined : '5 5'
+          stroke: invalidEdges[edge.id]
+            ? '#d66565'
+            : edge.enabled
+              ? solveStale
+                ? '#416f62'
+                : '#55b899'
+              : '#5d6572',
+          strokeWidth: invalidEdges[edge.id] ? 2.2 : edge.enabled ? 1.8 : 1,
+          strokeDasharray: edge.enabled ? undefined : '5 5',
+          opacity: solveStale ? 0.55 : 1
         },
         markerEnd: {
           type: MarkerType.ArrowClosed,
           width: 16,
           height: 16,
-          color: edge.enabled ? '#55b899' : '#5d6572'
+          color: invalidEdges[edge.id]
+            ? '#d66565'
+            : edge.enabled
+              ? '#55b899'
+              : '#5d6572'
         }
       })),
-    [project.edges, selectedEdgeId, solveResult]
+    [invalidEdges, project.edges, selectedEdgeId, solveResult, solveStale]
   )
 
   const onNodesChange = useCallback(
@@ -344,7 +610,7 @@ function Workspace(): React.JSX.Element {
           x: change.position?.x ?? 0,
           y: change.position?.y ?? 0
         }))
-      if (positions.length) setNodePositions(positions, false)
+      if (positions.length) setNodePositions(positions)
       const selection = changes.find((change) => change.type === 'select')
       if (selection?.type === 'select' && selection.selected) {
         setSelection(selection.id, null)
@@ -371,21 +637,36 @@ function Workspace(): React.JSX.Element {
     [removeEdges, setSelection]
   )
 
-  const getPortDirection = useCallback(
+  const getPort = useCallback(
     (
       nodeId: string | null | undefined,
       portKey: string | null | undefined
-    ): 'input' | 'output' | undefined => {
+    ) => {
       if (!nodeId || !portKey) return undefined
-      const node = project.nodes.find((entry) => entry.id === nodeId)
-      if (!node) return undefined
-      const detail = recipes[node.recipeId]
+      const node = useProjectStore
+        .getState()
+        .project.nodes.find((entry) => entry.id === nodeId)
+      if (!node?.recipeId) return undefined
+      const detail = useProjectStore.getState().recipes[node.recipeId]
       if (!detail) return undefined
-      if (detail.inputs.some((port) => port.key === portKey)) return 'input'
-      if (detail.outputs.some((port) => port.key === portKey)) return 'output'
+      const input = detail.inputs.find((port) => port.key === portKey)
+      if (input) return { direction: 'input' as const, port: input }
+      const output = detail.outputs.find((port) => port.key === portKey)
+      if (output) return { direction: 'output' as const, port: output }
       return undefined
     },
-    [project.nodes, recipes]
+    []
+  )
+
+  const portsCompatible = useCallback(
+    (
+      source: NonNullable<ReturnType<typeof getPort>>,
+      target: NonNullable<ReturnType<typeof getPort>>
+    ): boolean => {
+      if (source.port.goods.id === target.port.goods.id) return true
+      return target.port.goods.kind === 'ore' && source.port.goods.kind === 'item'
+    },
+    []
   )
 
   const handleConnect = useCallback(
@@ -398,19 +679,32 @@ function Workspace(): React.JSX.Element {
       ) {
         return
       }
-      const sourceDirection = getPortDirection(
+      const sourcePort = getPort(
         connection.source,
         connection.sourceHandle
       )
-      const targetDirection = getPortDirection(
+      const targetPort = getPort(
         connection.target,
         connection.targetHandle
       )
+      if (!sourcePort || !targetPort) return
+      const sourceDirection = sourcePort.direction
+      const targetDirection = targetPort.direction
       if (
         sourceDirection === targetDirection ||
         (sourceDirection !== 'input' && sourceDirection !== 'output') ||
         (targetDirection !== 'input' && targetDirection !== 'output')
       ) {
+        return
+      }
+      if (
+        !(
+          sourceDirection === 'output'
+            ? portsCompatible(sourcePort, targetPort)
+            : portsCompatible(targetPort, sourcePort)
+        )
+      ) {
+        setToast('物料类型不兼容，无法连线')
         return
       }
       const normalized =
@@ -435,43 +729,64 @@ function Workspace(): React.JSX.Element {
         enabled: true
       })
     },
-    [addEdge, getPortDirection]
+    [addEdge, getPort, portsCompatible]
   )
 
   const isValidConnection = useCallback<IsValidConnection<Edge>>(
     (connection) => {
-      const sourceDirection = getPortDirection(
+      const sourcePort = getPort(
         connection.source,
         connection.sourceHandle
       )
-      const targetDirection = getPortDirection(
+      const targetPort = getPort(
         connection.target,
         connection.targetHandle
       )
-      return (
-        (sourceDirection === 'output' && targetDirection === 'input') ||
-        (sourceDirection === 'input' && targetDirection === 'output')
-      )
+      if (!sourcePort || !targetPort) return false
+      if (
+        !(
+          (sourcePort.direction === 'output' &&
+            targetPort.direction === 'input') ||
+          (sourcePort.direction === 'input' &&
+            targetPort.direction === 'output')
+        )
+      ) {
+        return false
+      }
+      return sourcePort.direction === 'output'
+        ? portsCompatible(sourcePort, targetPort)
+        : portsCompatible(targetPort, sourcePort)
     },
-    [getPortDirection]
+    [getPort, portsCompatible]
   )
 
-  const addRecipeAt = useCallback(
-    async (recipeId: string, position?: { x: number; y: number }) => {
+  const addMachineAt = useCallback(
+    async (
+      machine: MachineRef,
+      position?: { x: number; y: number },
+      recipeId?: string
+    ) => {
       if (!workerRef.current) return
-      const detail = await workerRef.current.getRecipe(recipeId)
-      if (!detail) {
+      const detail = recipeId
+        ? await workerRef.current.getRecipe(recipeId)
+        : undefined
+      if (recipeId && !detail) {
         setToast('找不到该配方')
         return
       }
       const current = useProjectStore.getState().project
       const target =
         position ?? {
-          x: 120 + (current.nodes.length % 5) * 60,
-          y: 90 + (current.nodes.length % 7) * 48
+          x: 80 + (current.nodes.length % 3) * 600,
+          y: 70 + Math.floor(current.nodes.length / 3) * 250
         }
-      addNode(detail, target)
-      flow.setCenter(-target.x + 500, -target.y + 280, { zoom: 0.9, duration: 220 })
+      addNode(machine, target, detail ?? undefined)
+      if (!position) {
+        flow.setCenter(target.x + 260, target.y + 110, {
+          zoom: 0.85,
+          duration: 220
+        })
+      }
     },
     [addNode, flow]
   )
@@ -479,28 +794,74 @@ function Workspace(): React.JSX.Element {
   const handleDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault()
-      const recipeId = event.dataTransfer.getData('application/x-gtnh-recipe')
-      if (!recipeId) return
       const position = flow.screenToFlowPosition({
         x: event.clientX,
         y: event.clientY
       })
-      void addRecipeAt(recipeId, position)
+      const machineJson = event.dataTransfer.getData(
+        'application/x-gtnh-machine'
+      )
+      if (machineJson) {
+        try {
+          void addMachineAt(JSON.parse(machineJson) as MachineRef, position)
+        } catch {
+          setToast('机器数据无效')
+        }
+        return
+      }
+      const configuredJson = event.dataTransfer.getData(
+        'application/x-gtnh-machine-recipe'
+      )
+      if (!configuredJson) return
+      try {
+        const payload = JSON.parse(configuredJson) as {
+          machine: MachineRef
+          recipeId: string
+        }
+        void addMachineAt(payload.machine, position, payload.recipeId)
+      } catch {
+        setToast('配方数据无效')
+      }
     },
-    [addRecipeAt, flow]
+    [addMachineAt, flow]
   )
 
-  const handleSearch = useCallback(
-    (
-      query: string,
-      mode: RecipeSearchMode
-    ): Promise<RecipeSearchResponse> => {
-      if (!workerRef.current) {
-        return Promise.resolve({ items: [], recipes: [], total: 0 })
-      }
-      return workerRef.current.search(query, 100, mode)
-    },
+  const searchGoods = useCallback(
+    (query: string): Promise<RecipeSearchResponse> =>
+      workerRef.current?.searchGoods(query, 40) ??
+      Promise.resolve(EMPTY_GOODS_RESPONSE),
     []
+  )
+
+  const searchMachines = useCallback(
+    (query: string): Promise<MachineSearchResponse> =>
+      workerRef.current?.searchMachines(query, 80) ??
+      Promise.resolve(EMPTY_MACHINE_RESPONSE),
+    []
+  )
+
+  const searchRecipes = useCallback(
+    (request: ExactRecipeSearchRequest) =>
+      workerRef.current?.searchExactRecipes(request) ??
+      Promise.resolve({ recipes: [], total: 0, hasMore: false }),
+    []
+  )
+
+  const chooseRecipeForNode = useCallback(
+    (machine: MachineRef, recipeId: string) => {
+      const node = useProjectStore.getState().project.nodes.find(
+        (entry) => entry.id === useProjectStore.getState().selectedNodeId
+      )
+      if (!node || !workerRef.current) return
+      void workerRef.current.getRecipe(recipeId).then((detail) => {
+        if (!detail) {
+          setToast('找不到该配方')
+          return
+        }
+        setNodeRecipe(node.id, machine, detail)
+      })
+    },
+    [setNodeRecipe]
   )
 
   const saveProject = useCallback(
@@ -520,18 +881,17 @@ function Workspace(): React.JSX.Element {
     const opened = await window.gtnh.openProject()
     if (!opened) return
     try {
-      const parsed = JSON.parse(opened.content) as ProjectDocumentV1
-      if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.nodes)) {
-        throw new Error('不是有效的 .gtnhgraph 项目')
-      }
-      loadProject(parsed, opened.path)
-      if (parsed.data.commit !== status?.selected?.commit) {
+      const parsed = JSON.parse(opened.content) as unknown
+      const hydrated = await hydrateProject(parsed)
+      previewedKeysRef.current.clear()
+      loadProject(hydrated, opened.path)
+      if (hydrated.data.commit !== status?.selected?.commit) {
         setToast('项目使用的数据版本与当前缓存不同，部分配方可能缺失')
       }
     } catch (error) {
       setToast(error instanceof Error ? error.message : String(error))
     }
-  }, [loadProject, status?.selected?.commit])
+  }, [hydrateProject, loadProject, status?.selected?.commit])
 
   const exportPng = useCallback(async () => {
     const element = document.querySelector('.canvas-shell') as HTMLElement | null
@@ -628,6 +988,9 @@ function Workspace(): React.JSX.Element {
       const selectedStatus = await window.gtnh.getDataStatus()
       setStatus(selectedStatus)
       setWorkerLoaded(false)
+      workerUrlRef.current = 'gtnh-data://current/data.bin.gz'
+      clearPreviews()
+      previewedKeysRef.current.clear()
       if (!useProjectStore.getState().project.nodes.length) {
         initializeProject(result.version)
       }
@@ -646,6 +1009,9 @@ function Workspace(): React.JSX.Element {
       const nextStatus = await window.gtnh.getDataStatus()
       setStatus(nextStatus)
       setWorkerLoaded(false)
+      workerUrlRef.current = 'gtnh-data://current/data.bin.gz'
+      clearPreviews()
+      previewedKeysRef.current.clear()
       if (!useProjectStore.getState().project.nodes.length) {
         initializeProject(version)
       }
@@ -669,7 +1035,7 @@ function Workspace(): React.JSX.Element {
       <VersionPicker
         status={status}
         downloadProgress={downloadProgress}
-        localProgress={localProgress}
+        localProgress={status.localImport}
         downloading={downloading}
         error={downloadError}
         required={!status.selected}
@@ -698,7 +1064,8 @@ function Workspace(): React.JSX.Element {
           <div>
             <strong>GTNH 产线设计器</strong>
             <span>
-              data v{status.selected?.dataVersion} · {dataCounts?.recipes.toLocaleString() ?? '—'} 配方
+              data v{status.selected?.dataVersion} ·{' '}
+              {dataCounts?.recipes.toLocaleString() ?? '—'} 配方
             </span>
           </div>
         </div>
@@ -727,6 +1094,7 @@ function Workspace(): React.JSX.Element {
             title="新建项目"
             onClick={() => {
               if (!dirty || window.confirm('当前项目尚未保存，仍要新建吗？')) {
+                previewedKeysRef.current.clear()
                 initializeProject(status.selected)
               }
             }}
@@ -759,12 +1127,12 @@ function Workspace(): React.JSX.Element {
           <span className="toolbar-separator" />
           <button
             className="icon-text calculate-button"
-            title="计算实际输入输出"
+            title="校验并计算整条产线"
             disabled={!workerLoaded || !project.nodes.length || solving}
             onClick={() => void calculateProduction()}
           >
             <Calculator size={16} />
-            {solving ? '计算中…' : '计算'}
+            {solveStale ? '重新计算' : '计算'}
           </button>
           <span className="toolbar-separator" />
           <label className="toolbar-select">
@@ -772,7 +1140,7 @@ function Workspace(): React.JSX.Element {
             <select
               value={project.timeUnit}
               onChange={(event) =>
-                setTimeUnit(event.target.value as ProjectDocumentV1['timeUnit'])
+                setTimeUnit(event.target.value as ProjectDocument['timeUnit'])
               }
             >
               <option value="min">分钟</option>
@@ -798,8 +1166,13 @@ function Workspace(): React.JSX.Element {
 
       <div className="workspace">
         <RecipePalette
-          search={handleSearch}
-          onAddRecipe={(recipeId) => void addRecipeAt(recipeId)}
+          searchMachines={searchMachines}
+          searchGoods={searchGoods}
+          searchRecipes={searchRecipes}
+          onAddMachine={(machine) => void addMachineAt(machine)}
+          onChooseRecipe={(machine, recipeId) =>
+            void addMachineAt(machine, undefined, recipeId)
+          }
         />
 
         <main
@@ -819,13 +1192,15 @@ function Workspace(): React.JSX.Element {
             maxZoom={2.2}
             snapToGrid
             snapGrid={[16, 16]}
+            onlyRenderVisibleElements
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={handleConnect}
             isValidConnection={isValidConnection}
             connectionMode={ConnectionMode.Loose}
-            connectionRadius={28}
+            connectionRadius={32}
             onNodeDragStart={pushHistory}
+            onNodeDragStop={commitHistory}
             onNodeClick={(_event, node) => setSelection(node.id, null)}
             onEdgeClick={(_event, edge) => setSelection(null, edge.id)}
             onPaneClick={() => setSelection(null, null)}
@@ -844,23 +1219,21 @@ function Workspace(): React.JSX.Element {
               position="bottom-right"
               pannable
               zoomable
-              nodeColor={(node) =>
-                (node.data as { computed?: { valid?: boolean } }).computed?.valid === false
+              nodeColor={(node) => {
+                const data = node.data as RecipeFlowNode['data']
+                return data.invalidReasons?.length ||
+                  data.preview?.valid === false ||
+                  !data.graphNode.recipeId
                   ? '#d66565'
                   : '#4b9e86'
-              }
+              }}
               maskColor="#0f1115b8"
             />
-            {solving && (
-              <Panel position="top-right">
-                <div className="solving-badge">正在求解…</div>
-              </Panel>
-            )}
             {!project.nodes.length && (
               <Panel position="top-center">
                 <div className="canvas-empty">
-                  <strong>从左侧拖入生产配方</strong>
-                  <span>节点连接后在底部查看外部物料和功率汇总。</span>
+                  <strong>从左侧选择机器或精确配方</strong>
+                  <span>机器节点先配置配方，再拖拽端口建立产线。</span>
                 </div>
               </Panel>
             )}
@@ -868,17 +1241,27 @@ function Workspace(): React.JSX.Element {
         </main>
 
         <Inspector
+          key={selectedNodeId ?? 'none'}
           node={selectedNode}
           edge={selectedEdge}
           detail={
-            selectedNode
-              ? recipes[selectedNode.recipeId] ?? {
-                  ...MISSING_RECIPE,
-                  id: selectedNode.recipeId
-                }
+            selectedNode?.recipeId ? recipes[selectedNode.recipeId] : undefined
+          }
+          preview={selectedNode ? previews[selectedNode.id] : undefined}
+          computed={
+            selectedNode && !solveStale
+              ? solveResult?.nodes[selectedNode.id]
               : undefined
           }
-          computed={selectedNode ? solveResult?.nodes[selectedNode.id] : undefined}
+          invalidReasons={
+            selectedNode ? invalidNodes[selectedNode.id] : undefined
+          }
+          searchGoods={searchGoods}
+          searchRecipes={searchRecipes}
+          onChooseRecipe={chooseRecipeForNode}
+          onChangeMachine={(machine) => {
+            if (selectedNode) setNodeMachine(selectedNode.id, machine)
+          }}
           onUpdateNode={(patch) => {
             if (selectedNode) updateNode(selectedNode.id, patch)
           }}
@@ -901,7 +1284,19 @@ function Workspace(): React.JSX.Element {
         />
       </div>
 
-      <AnalysisPanel result={solveResult} timeUnit={project.timeUnit} />
+      <AnalysisPanel
+        result={solveResult}
+        timeUnit={project.timeUnit}
+        stale={solveStale}
+        invalidNodeCount={Object.keys(invalidNodes).length + Object.keys(invalidEdges).length}
+      />
+
+      <CalculationModal
+        open={calculationOpen}
+        stage={calculationStage}
+        elapsedSeconds={elapsedSeconds}
+        onCancel={cancelCalculation}
+      />
 
       {toast && (
         <button className="toast" onClick={() => setToast(null)}>

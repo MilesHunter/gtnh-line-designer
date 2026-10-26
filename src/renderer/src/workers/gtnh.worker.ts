@@ -33,11 +33,65 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>): Promise<void> => {
       return
     }
 
+    if (request.type === 'goods-search') {
+      respond({
+        id: request.id,
+        type: 'goods-search',
+        result: engine.searchGoods(request.query, request.limit)
+      })
+      return
+    }
+
+    if (request.type === 'machine-search') {
+      respond({
+        id: request.id,
+        type: 'machine-search',
+        result: engine.searchMachines(request.query, request.limit)
+      })
+      return
+    }
+
+    if (request.type === 'exact-recipe-search') {
+      respond({
+        id: request.id,
+        type: 'exact-recipe-search',
+        result: engine.searchExactRecipes(request.request)
+      })
+      return
+    }
+
+    if (request.type === 'machine') {
+      respond({
+        id: request.id,
+        type: 'machine',
+        result: engine.getMachine(request.machineId)
+      })
+      return
+    }
+
     if (request.type === 'recipe') {
       respond({
         id: request.id,
         type: 'recipe',
         result: engine.getRecipe(request.recipeId)
+      })
+      return
+    }
+
+    if (request.type === 'preview') {
+      respond({
+        id: request.id,
+        type: 'preview',
+        result: engine.previewNode(request.node)
+      })
+      return
+    }
+
+    if (request.type === 'validate') {
+      respond({
+        id: request.id,
+        type: 'validate',
+        result: engine.validate(request.project)
       })
       return
     }

@@ -53,7 +53,7 @@ describe.skipIf(!hasLocalData)('GtnhEngine with GTNH 2.9.0-v7 data', () => {
         targetPortKey: detail?.outputs[0]?.key,
         targetRate: 1,
         voltageTier: detail?.nativeVoltageTier ?? 0,
-        crafterId: detail?.defaultCrafterId,
+        machine: detail!.availableCrafters[0],
         choices: {},
         overrides: {
           speedMultiplier: 1,
@@ -68,6 +68,107 @@ describe.skipIf(!hasLocalData)('GtnhEngine with GTNH 2.9.0-v7 data', () => {
     expect(result.totalPower).toBeGreaterThan(0)
     expect(result.externalInputs.length).toBeGreaterThan(0)
     expect(result.externalOutputs.length).toBeGreaterThan(0)
+    expect(engine.validate(project).valid).toBe(true)
+    const danglingValidation = engine.validate({
+      ...project,
+      edges: [
+        {
+          id: 'dangling',
+          source: { nodeId: 'iron-plate', portKey: detail!.outputs[0].key },
+          target: { nodeId: 'deleted-node', portKey: 'missing' },
+          priority: 0,
+          enabled: true
+        }
+      ]
+    })
+    expect(danglingValidation.removedEdgeIds).toContain('dangling')
+
+    const chineseMachineSearch = engine.searchMachines('大型化学反应釜')
+    const largeChemicalReactor = chineseMachineSearch.machines.find(
+      (machine) => machine.name === 'Large Chemical Reactor'
+    )
+    expect(largeChemicalReactor?.multiblock).toBe(true)
+    const allMachines = engine.searchMachines('', 2000).machines
+    expect(allMachines.some((machine) => machine.multiblock)).toBe(true)
+    expect(allMachines.some((machine) => !machine.multiblock)).toBe(true)
+    const basicAlloySmelter = allMachines.find(
+      (machine) => machine.name === 'Basic Alloy Smelter'
+    )
+    expect(basicAlloySmelter?.multiblock).toBe(false)
+    expect(basicAlloySmelter?.displayName).toBe('基础合金炉')
+
+    const ironPlateGoods = engine.searchGoods('Iron Plate', 20).items[0]
+    const ironIngotGoods = engine.searchGoods('Iron Ingot', 20).items.find(
+      (item) => item.kind === 'item'
+    )
+    const exactPairSearch = engine.searchExactRecipes({
+      input: ironPlateGoods,
+      output: ironIngotGoods,
+      limit: 100
+    })
+    expect(exactPairSearch.total).toBeGreaterThan(0)
+    expect(
+      exactPairSearch.recipes.every(
+        (entry) =>
+          entry.inputs.some((goods) => goods.name === 'Iron Plate') &&
+          entry.outputs.some((goods) => goods.name === 'Iron Ingot')
+      )
+    ).toBe(true)
+    const unfilteredExactSearch = engine.searchExactRecipes({
+      input: ironPlateGoods,
+      limit: 100
+    })
+    const compatibleMachine = unfilteredExactSearch.recipes
+      .flatMap((entry) => entry.crafters)
+      .find((machine) => machine.multiblock) ??
+      unfilteredExactSearch.recipes[0]?.crafters[0]
+    expect(compatibleMachine).toBeDefined()
+    const exactSearch = engine.searchExactRecipes({
+      input: ironPlateGoods,
+      machineId: compatibleMachine?.id,
+      limit: 50
+    })
+    expect(exactSearch.total).toBeGreaterThan(0)
+    expect(
+      exactSearch.recipes.every(
+        (entry) =>
+          entry.crafters.length === 1 &&
+          entry.crafters[0].id === compatibleMachine?.id
+      )
+    ).toBe(true)
+
+    const platePreview = engine.previewNode({
+      ...project.nodes[0],
+      recipeId: recipe.id,
+      machine: detail!.availableCrafters[0]
+    })
+    expect(platePreview?.valid).toBe(true)
+    expect(platePreview?.overclockTiers).toBe(0)
+    const singleMachine = detail!.availableCrafters.find(
+      (machine) => !machine.multiblock
+    )
+    if (singleMachine) {
+      const singlePreview = engine.previewNode({
+        ...project.nodes[0],
+        machine: singleMachine
+      })
+      expect(singlePreview?.machineInfo?.coilAvailable).toBe(false)
+    }
+
+    const higherTierRecipe = engine
+      .searchExactRecipes({ input: ironPlateGoods, limit: 200 })
+      .recipes.map((entry) => engine.getRecipe(entry.id))
+      .find((entry) => entry && entry.nativeVoltageTier > 0)
+    if (higherTierRecipe) {
+      const lowVoltagePreview = engine.previewNode({
+        ...project.nodes[0],
+        recipeId: higherTierRecipe.id,
+        machine: higherTierRecipe.availableCrafters[0],
+        voltageTier: 0
+      })
+      expect(lowVoltagePreview?.valid).toBe(false)
+      expect(lowVoltagePreview?.recipesPerMinute).toBe(0)
+    }
 
     const sourcePort = detail?.outputs[0]
     const targetSearch = engine.search('Iron Gear', 100)
@@ -84,7 +185,7 @@ describe.skipIf(!hasLocalData)('GtnhEngine with GTNH 2.9.0-v7 data', () => {
         targetPortKey: targetDetail.outputs[0]?.key,
         targetRate: 1,
         voltageTier: targetDetail.nativeVoltageTier,
-        crafterId: targetDetail.defaultCrafterId,
+        machine: targetDetail.availableCrafters[0],
         choices: {},
         overrides: {
           speedMultiplier: 1,

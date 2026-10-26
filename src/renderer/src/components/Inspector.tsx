@@ -1,22 +1,44 @@
-import { AlertTriangle, Copy, Gauge, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import {
+  AlertTriangle,
+  Copy,
+  Gauge,
+  RefreshCw,
+  SlidersHorizontal,
+  Trash2
+} from 'lucide-react'
 import type {
-  GraphNodeV1,
+  ComputedNode,
+  ExactRecipeSearchRequest,
+  ExactRecipeSearchResponse,
+  GraphNode,
+  MachineRef,
   RecipeDetail,
+  RecipeSearchResponse,
   SolveResult
 } from '../../../shared/types'
 import { formatPower } from '../lib/project'
 import { AtlasIcon } from './AtlasIcon'
+import { RecipeFinder } from './RecipeFinder'
 
 interface InspectorProps {
-  node?: GraphNodeV1
+  node?: GraphNode
   edge?: {
     id: string
     priority: number
     enabled: boolean
   }
   detail?: RecipeDetail
+  preview?: ComputedNode | null
   computed?: SolveResult['nodes'][string]
-  onUpdateNode: (patch: Partial<GraphNodeV1>) => void
+  invalidReasons?: string[]
+  searchGoods: (query: string) => Promise<RecipeSearchResponse>
+  searchRecipes: (
+    request: ExactRecipeSearchRequest
+  ) => Promise<ExactRecipeSearchResponse>
+  onChooseRecipe: (machine: MachineRef, recipeId: string) => void
+  onChangeMachine: (machine: MachineRef) => void
+  onUpdateNode: (patch: Partial<GraphNode>) => void
   onUpdateChoice: (key: string, value: number) => void
   onUpdateEdge: (patch: { priority?: number; enabled?: boolean }) => void
   onDelete: () => void
@@ -44,13 +66,21 @@ export function Inspector({
   node,
   edge,
   detail,
+  preview,
   computed,
+  invalidReasons,
+  searchGoods,
+  searchRecipes,
+  onChooseRecipe,
+  onChangeMachine,
   onUpdateNode,
   onUpdateChoice,
   onUpdateEdge,
   onDelete,
   onDuplicate
 }: InspectorProps): React.JSX.Element {
+  const [choosingRecipe, setChoosingRecipe] = useState(false)
+
   if (edge) {
     return (
       <aside className="inspector">
@@ -100,37 +130,89 @@ export function Inspector({
         </div>
         <div className="empty-state inspector-empty">
           <SlidersHorizontal size={28} />
-          <p>选择节点或连线后可编辑详细参数。</p>
+          <p>选择机器节点或连线后可编辑详细参数。</p>
         </div>
       </aside>
     )
   }
 
-  const machineChoices = computed?.machineInfo?.choices ?? []
-  const fixedVoltage = computed?.machineInfo?.fixedVoltageTier
+  const machineChoices = preview?.machineInfo?.choices ?? []
+  const fixedVoltage = preview?.machineInfo?.fixedVoltageTier
+  const warnings = invalidReasons?.length
+    ? invalidReasons
+    : preview?.warnings ?? []
 
   return (
     <aside className="inspector">
       <div className="panel-title">
         <div>
-          <span className="eyebrow">Recipe Node</span>
-          <h2>{detail?.recipeType ?? '缺失配方'}</h2>
+          <span className="eyebrow">Machine Node</span>
+          <h2>{node.machine.displayName}</h2>
         </div>
-        <button
-          className="icon-button"
-          title="复制节点"
-          onClick={onDuplicate}
-        >
-          <Copy size={15} />
-        </button>
+        <div className="inspector-title-actions">
+          <span className={`machine-kind ${node.machine.multiblock ? 'multi' : 'single'}`}>
+            {node.machine.multiblock ? '多' : '单'}
+          </span>
+          <button className="icon-button" title="复制节点" onClick={onDuplicate}>
+            <Copy size={15} />
+          </button>
+        </div>
       </div>
 
-      {computed?.warnings.map((warning) => (
+      {warnings.map((warning) => (
         <div className="warning-banner" key={warning}>
           <AlertTriangle size={15} />
           <span>{warning}</span>
         </div>
       ))}
+
+      <section className="inspector-section">
+        <div className="section-heading-row">
+          <h3>机器配方</h3>
+          <button
+            className="compact-action"
+            onClick={() => setChoosingRecipe((value) => !value)}
+          >
+            <RefreshCw size={13} />
+            {choosingRecipe ? '收起' : node.recipeId ? '更换配方' : '选择配方'}
+          </button>
+        </div>
+        {detail && !choosingRecipe ? (
+          <div className="selected-recipe-card">
+            {detail.outputs[0] && (
+              <AtlasIcon
+                iconId={detail.outputs[0].goods.iconId}
+                size={28}
+                title={detail.outputs[0].goods.name}
+              />
+            )}
+            <span>
+              <strong>
+                {detail.outputs.slice(0, 2).map((port) => port.goods.name).join(' · ') ||
+                  '无主产物'}
+              </strong>
+              <small>{node.recipeId}</small>
+            </span>
+          </div>
+        ) : node.recipeId && !choosingRecipe ? (
+          <div className="error-banner">当前数据版本中缺少该配方，可重新选择。</div>
+        ) : null}
+        {choosingRecipe && (
+          <div className="inspector-finder">
+            <RecipeFinder
+              compact
+              machineId={node.machine.id}
+              fixedMachine={node.machine}
+              searchGoods={searchGoods}
+              searchRecipes={searchRecipes}
+              onChoose={(machine, recipeId) => {
+                onChooseRecipe(machine, recipeId)
+                setChoosingRecipe(false)
+              }}
+            />
+          </div>
+        )}
+      </section>
 
       <section className="inspector-section">
         <h3>生产速率</h3>
@@ -150,7 +232,7 @@ export function Inspector({
         </div>
         {node.rateMode === 'machines' ? (
           <label className="field">
-            <span>机器数量</span>
+            <span>理论等效机器数</span>
             <input
               type="number"
               min="0.0001"
@@ -161,7 +243,7 @@ export function Inspector({
               }
             />
             <small>
-              支持理论小数；建议建造 {computed?.recommendedMachineCount ?? '—'} 台。
+              支持小数；建议建造 {preview?.recommendedMachineCount ?? '—'} 台。
             </small>
           </label>
         ) : (
@@ -195,24 +277,30 @@ export function Inspector({
             </label>
           </>
         )}
-        {computed && (
+        {preview && (
           <div className="metric-grid">
             <div>
               <span>配方次数</span>
-              <strong>{computed.recipesPerMinute.toFixed(4)}/min</strong>
+              <strong>{preview.recipesPerMinute.toFixed(4)}/min</strong>
             </div>
             <div>
               <span>建议建造</span>
-              <strong>{computed.recommendedMachineCount} 台</strong>
+              <strong>{preview.recommendedMachineCount} 台</strong>
             </div>
             <div>
               <span>负载率</span>
-              <strong>{(computed.utilization * 100).toFixed(1)}%</strong>
+              <strong>{(preview.utilization * 100).toFixed(1)}%</strong>
             </div>
             <div>
-              <span>平均功率</span>
-              <strong>{formatPower(computed.euPerTick)} EU/t</strong>
+              <span>理论功率</span>
+              <strong>{formatPower(preview.euPerTick)} EU/t</strong>
             </div>
+          </div>
+        )}
+        {computed && (
+          <div className="actual-summary">
+            整线实际：{computed.recipesPerMinute.toFixed(3)} 次/min ·{' '}
+            {formatPower(computed.euPerTick)} EU/t
           </div>
         )}
       </section>
@@ -220,20 +308,25 @@ export function Inspector({
       <section className="inspector-section">
         <h3>机器与超频</h3>
         <label className="field">
-          <span>机器</span>
+          <span>具体机器</span>
           <select
-            value={node.crafterId ?? ''}
-            onChange={(event) =>
-              onUpdateNode({ crafterId: event.target.value || undefined })
-            }
+            value={node.machine.id}
+            disabled={!detail}
+            onChange={(event) => {
+              const machine = detail?.availableCrafters.find(
+                (entry) => entry.id === event.target.value
+              )
+              if (machine) onChangeMachine(machine)
+            }}
           >
-            <option value="">自动选择</option>
-            {detail?.availableCrafters.map((crafter) => (
-              <option key={crafter.id} value={crafter.id}>
-                {crafter.name}
+            {!detail && <option value={node.machine.id}>{node.machine.displayName}</option>}
+            {detail?.availableCrafters.map((machine) => (
+              <option key={machine.id} value={machine.id}>
+                {machine.displayName}
               </option>
             ))}
           </select>
+          <small>更换机器会断开当前节点的全部连线。</small>
         </label>
         <label className="field">
           <span>电压等级</span>
@@ -251,12 +344,12 @@ export function Inspector({
             ))}
           </select>
         </label>
-        {computed && (
+        {preview && (
           <div className="calculation-note">
             <Gauge size={15} />
             <span>
-              {computed.overclockName} · 并行 {computed.parallels} ·
-              {' '}{computed.durationTicks} ticks
+              {preview.overclockName} · 并行 {preview.parallels} ·{' '}
+              {preview.durationTicks} ticks
             </span>
           </div>
         )}
@@ -264,12 +357,12 @@ export function Inspector({
 
       {machineChoices.length > 0 && (
         <section className="inspector-section">
-          <h3>机器参数</h3>
+          <h3>{preview?.machineInfo?.coilAvailable ? '线圈与机器参数' : '机器参数'}</h3>
           {machineChoices.map((choice) => {
             const value = node.choices[choice.key] ?? choice.min
-            const defaultChoice = choice.key === 'coilTier' || choice.key === 'coils'
+            const coilChoice = choice.key === 'coilTier' || choice.key === 'coils'
             return (
-              <label className={`field ${defaultChoice ? 'highlight-field' : ''}`} key={choice.key}>
+              <label className={`field ${coilChoice ? 'highlight-field' : ''}`} key={choice.key}>
                 <span>{choice.label}</span>
                 {choice.options ? (
                   <select
@@ -337,47 +430,29 @@ export function Inspector({
             }
           />
         </label>
-        <label className="field">
-          <span>并行数覆写</span>
-          <input
-            type="number"
-            min="0"
-            step="1"
-            value={node.overrides.parallels ?? ''}
-            placeholder="自动"
-            onChange={(event) =>
-              onUpdateNode({
-                overrides: {
-                  ...node.overrides,
-                  parallels: event.target.value
-                    ? Number(event.target.value)
-                    : undefined
-                }
-              })
-            }
-          />
-        </label>
+        {preview?.machineInfo?.parallelCapable && (
+          <label className="field">
+            <span>并行数覆写</span>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={node.overrides.parallels ?? ''}
+              placeholder={`自动 ${preview.parallels}`}
+              onChange={(event) =>
+                onUpdateNode({
+                  overrides: {
+                    ...node.overrides,
+                    parallels: event.target.value
+                      ? Number(event.target.value)
+                      : undefined
+                  }
+                })
+              }
+            />
+          </label>
+        )}
       </section>
-
-      {detail && (
-        <details className="recipe-summary">
-          <summary>查看配方基础数据</summary>
-          <div className="recipe-io-grid">
-            {[...detail.inputs, ...detail.outputs].map((port) => (
-              <div className="recipe-io-item" key={`${port.direction}-${port.key}`}>
-                <AtlasIcon iconId={port.goods.iconId} size={24} />
-                <span>
-                  <strong>{port.goods.name}</strong>
-                  <small>
-                    {port.direction === 'input' ? '输入' : '输出'} · {port.amount} ×{' '}
-                    {(port.probability * 100).toFixed(1)}%
-                  </small>
-                </span>
-              </div>
-            ))}
-          </div>
-        </details>
-      )}
 
       <button className="danger row-button delete-node" onClick={onDelete}>
         <Trash2 size={16} />

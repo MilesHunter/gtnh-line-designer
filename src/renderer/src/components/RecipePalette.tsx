@@ -1,108 +1,73 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Box, ChevronRight, Factory, Search, TestTube } from 'lucide-react'
+import { Boxes, Factory, Search } from 'lucide-react'
 import type {
-  RecipeSearchMode,
-  RecipeSearchResponse,
-  SearchItemResult,
-  SearchRecipeResult
+  ExactRecipeSearchRequest,
+  ExactRecipeSearchResponse,
+  MachineRef,
+  MachineSearchResponse,
+  MachineSummary,
+  RecipeSearchResponse
 } from '../../../shared/types'
 import { AtlasIcon } from './AtlasIcon'
+import { RecipeFinder } from './RecipeFinder'
 
 interface RecipePaletteProps {
-  onAddRecipe: (recipeId: string) => void
-  search: (
-    query: string,
-    mode: RecipeSearchMode
-  ) => Promise<RecipeSearchResponse>
+  searchMachines: (query: string) => Promise<MachineSearchResponse>
+  searchGoods: (query: string) => Promise<RecipeSearchResponse>
+  searchRecipes: (
+    request: ExactRecipeSearchRequest
+  ) => Promise<ExactRecipeSearchResponse>
+  onAddMachine: (machine: MachineRef) => void
+  onChooseRecipe: (machine: MachineRef, recipeId: string) => void
 }
 
-type PaletteTab = 'items' | 'recipes'
-
-function GoodsRow({
-  item,
-  mode,
-  onClick
+function MachineRow({
+  machine,
+  onAdd
 }: {
-  item: SearchItemResult
-  mode: RecipeSearchMode
-  onClick: () => void
+  machine: MachineSummary
+  onAdd: (machine: MachineRef) => void
 }): React.JSX.Element {
-  const recipeCount =
-    mode === 'ingredient' ? item.consumptionRecipes : item.productionRecipes
-  return (
-    <button className="palette-row" onClick={onClick} title={item.tooltip}>
-      <AtlasIcon iconId={item.iconId} title={item.name} />
-      <span className="row-copy">
-        <strong>{item.name}</strong>
-        <small>
-          {item.kind === 'fluid' ? '流体' : item.kind === 'ore' ? '矿辞' : '物品'} ·{' '}
-          {item.mod || 'unknown'} · {recipeCount}{' '}
-          {mode === 'ingredient' ? '条消耗配方' : '条生产配方'}
-        </small>
-      </span>
-      <ChevronRight size={15} />
-    </button>
-  )
-}
-
-function RecipeRow({
-  recipe,
-  mode,
-  query,
-  onClick
-}: {
-  recipe: SearchRecipeResult
-  mode: RecipeSearchMode
-  query: string
-  onClick: () => void
-}): React.JSX.Element {
-  const candidates =
-    mode === 'ingredient' ? recipe.inputs : recipe.outputs
-  const normalizedQuery = query.trim().toLocaleLowerCase()
-  const primary =
-    candidates.find((goods) =>
-      goods.name.toLocaleLowerCase().includes(normalizedQuery)
-    ) ?? candidates[0]
   return (
     <button
-      className="palette-row recipe-row"
+      className="machine-row"
       draggable
       onDragStart={(event) => {
-        event.dataTransfer.setData('application/x-gtnh-recipe', recipe.id)
+        event.dataTransfer.setData(
+          'application/x-gtnh-machine',
+          JSON.stringify(machine)
+        )
         event.dataTransfer.effectAllowed = 'copy'
       }}
-      onClick={onClick}
-      title={`添加 ${recipe.recipeType} 配方`}
+      onClick={() => onAdd(machine)}
     >
-      {primary ? (
-        <AtlasIcon iconId={primary.iconId} title={primary.name} />
-      ) : (
-        <Factory size={24} />
-      )}
+      <AtlasIcon iconId={machine.iconId} size={28} title={machine.displayName} />
       <span className="row-copy">
-        <strong>{primary?.name ?? recipe.id}</strong>
+        <strong title={machine.displayName}>{machine.displayName}</strong>
         <small>
-          {mode === 'ingredient' ? '消耗原料' : '产物配方'} ·{' '}
-          {recipe.recipeType}
+          {machine.multiblock ? '多方块' : '单方块'} · {machine.recipeTypeCount} 类配方
+          {machine.hasModel ? '' : ' · 近似计算'}
         </small>
       </span>
-      <ChevronRight size={15} />
+      <span className={`machine-kind ${machine.multiblock ? 'multi' : 'single'}`}>
+        {machine.multiblock ? '多' : '单'}
+      </span>
     </button>
   )
 }
 
 export function RecipePalette({
-  onAddRecipe,
-  search
+  searchMachines,
+  searchGoods,
+  searchRecipes,
+  onAddMachine,
+  onChooseRecipe
 }: RecipePaletteProps): React.JSX.Element {
+  const [tab, setTab] = useState<'machines' | 'recipes'>('recipes')
   const [query, setQuery] = useState('')
-  const [tab, setTab] = useState<PaletteTab>('items')
-  const [recipeMode, setRecipeMode] =
-    useState<RecipeSearchMode>('product')
-  const [result, setResult] = useState<RecipeSearchResponse>({
-    items: [],
-    recipes: [],
+  const [machines, setMachines] = useState<MachineSearchResponse>({
+    machines: [],
     total: 0
   })
   const [loading, setLoading] = useState(false)
@@ -110,141 +75,113 @@ export function RecipePalette({
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    if (tab !== 'machines') return
     const current = ++requestId.current
     setLoading(true)
     const timer = window.setTimeout(() => {
-      void search(query, recipeMode)
+      void searchMachines(query)
         .then((response) => {
-          if (requestId.current === current) setResult(response)
+          if (requestId.current === current) setMachines(response)
+        })
+        .catch(() => {
+          if (requestId.current === current) {
+            setMachines({ machines: [], total: 0 })
+          }
         })
         .finally(() => {
           if (requestId.current === current) setLoading(false)
         })
-    }, 120)
+    }, 100)
     return () => window.clearTimeout(timer)
-  }, [query, recipeMode, search])
+  }, [query, searchMachines, tab])
 
-  const rows = tab === 'items' ? result.items : result.recipes
   const virtualizer = useVirtualizer({
-    count: rows.length,
+    count: machines.machines.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 52,
-    overscan: 8
+    estimateSize: () => 54,
+    overscan: 10
   })
-
-  const emptyText = useMemo(() => {
-    if (loading) return '正在检索本地数据…'
-    return query ? '没有匹配结果' : '输入名称、模组或配方类型'
-  }, [loading, query])
-
-  const handleItem = async (item: SearchItemResult): Promise<void> => {
-    const recipeCount =
-      recipeMode === 'ingredient'
-        ? item.consumptionRecipes
-        : item.productionRecipes
-    if (!recipeCount) return
-    const response = await search(item.name, recipeMode)
-    setResult(response)
-    setTab('recipes')
-  }
 
   return (
     <aside className="recipe-palette">
       <div className="panel-title">
         <div>
-          <span className="eyebrow">Recipe Browser</span>
-          <h2>配方库</h2>
+          <span className="eyebrow">Production Browser</span>
+          <h2>机器与配方</h2>
         </div>
-        <span className="count-badge">{result.total}</span>
+        <span className="count-badge">
+          {tab === 'machines' ? machines.total : '精确'}
+        </span>
       </div>
-
-      <label className="search-field">
-        <Search size={16} />
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="搜索物品、流体、配方…"
-          autoFocus
-        />
-      </label>
 
       <div className="segmented">
         <button
-          className={tab === 'items' ? 'active' : ''}
-          onClick={() => setTab('items')}
+          className={tab === 'machines' ? 'active' : ''}
+          onClick={() => setTab('machines')}
         >
-          <Box size={15} />
-          物品与流体
+          <Factory size={15} />
+          机器搜索
         </button>
         <button
           className={tab === 'recipes' ? 'active' : ''}
           onClick={() => setTab('recipes')}
         >
-          <TestTube size={15} />
-          配方搜索
-        </button>
-      </div>
-      <div className="segmented recipe-search-mode">
-        <button
-          className={recipeMode === 'product' ? 'active' : ''}
-          onClick={() => setRecipeMode('product')}
-        >
-          <Factory size={14} />
-          按产物搜索
-        </button>
-        <button
-          className={recipeMode === 'ingredient' ? 'active' : ''}
-          onClick={() => setRecipeMode('ingredient')}
-        >
-          <Box size={14} />
-          按原料搜索
+          <Boxes size={15} />
+          原料 / 产物
         </button>
       </div>
 
-      <div className="palette-scroll" ref={scrollRef}>
-        {rows.length === 0 ? (
-          <div className="empty-state">{emptyText}</div>
-        ) : (
-          <div
-            className="virtual-list"
-            style={{ height: virtualizer.getTotalSize() }}
-          >
-            {virtualizer.getVirtualItems().map((virtualRow) => {
-              const row = rows[virtualRow.index]
-              return (
-                <div
-                  key={row.id ?? virtualRow.key}
-                  className="virtual-row"
-                  style={{
-                    transform: `translateY(${virtualRow.start}px)`,
-                    height: virtualRow.size
-                  }}
-                >
-                  {tab === 'items' ? (
-                    <GoodsRow
-                      item={row as SearchItemResult}
-                      mode={recipeMode}
-                      onClick={() => void handleItem(row as SearchItemResult)}
-                    />
-                  ) : (
-                    <RecipeRow
-                      recipe={row as SearchRecipeResult}
-                      mode={recipeMode}
-                      query={query}
-                      onClick={() => onAddRecipe(row.id)}
-                    />
-                  )}
-                </div>
-              )
-            })}
+      {tab === 'machines' ? (
+        <>
+          <label className="search-field">
+            <Search size={16} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索机器中文名、英文名或模组"
+              autoFocus
+            />
+          </label>
+          <div className="palette-scroll machine-scroll" ref={scrollRef}>
+            {!machines.machines.length ? (
+              <div className="empty-state">
+                {loading ? '正在检索机器…' : '没有匹配机器'}
+              </div>
+            ) : (
+              <div
+                className="virtual-list"
+                style={{ height: virtualizer.getTotalSize() }}
+              >
+                {virtualizer.getVirtualItems().map((virtualRow) => {
+                  const machine = machines.machines[virtualRow.index]
+                  return (
+                    <div
+                      key={machine.id}
+                      className="virtual-row"
+                      style={{
+                        transform: `translateY(${virtualRow.start}px)`,
+                        height: virtualRow.size
+                      }}
+                    >
+                      <MachineRow machine={machine} onAdd={onAddMachine} />
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
-        )}
-      </div>
-
-      <footer className="palette-footer">
-        <span>拖拽或点击配方以添加节点</span>
-        <kbd>F</kbd>
-      </footer>
+          <footer className="palette-footer">
+            <span>点击或拖入画布创建空机器节点</span>
+            <kbd>M</kbd>
+          </footer>
+        </>
+      ) : (
+        <RecipeFinder
+          searchGoods={searchGoods}
+          searchRecipes={searchRecipes}
+          onChoose={onChooseRecipe}
+        />
+      )}
     </aside>
   )
 }

@@ -1,14 +1,14 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import {
   Handle,
   Position,
   type NodeProps,
   type Node as FlowNode
 } from '@xyflow/react'
-import { AlertTriangle, Factory, Settings2 } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronUp, Settings2 } from 'lucide-react'
 import type {
   ComputedNode,
-  GraphNodeV1,
+  GraphNode,
   PortDirection,
   RecipeDetail,
   RecipePort
@@ -17,67 +17,44 @@ import { formatPower, formatRate } from '../lib/project'
 import { AtlasIcon } from './AtlasIcon'
 
 export interface RecipeNodeData extends Record<string, unknown> {
-  graphNode: GraphNodeV1
-  detail: RecipeDetail
+  graphNode: GraphNode
+  detail?: RecipeDetail
+  preview?: ComputedNode | null
   computed?: ComputedNode
   timeUnit: 'hour' | 'min' | 'sec' | 'tick'
-  onUpdate: (patch: Partial<GraphNodeV1>) => void
-  onSelect: () => void
+  invalidReasons?: string[]
+  onSelect: (nodeId: string) => void
 }
 
-export type RecipeFlowNode = FlowNode<RecipeNodeData, 'recipe'>
+export type RecipeFlowNode = FlowNode<RecipeNodeData, 'machine'>
 
-const VOLTAGE_NAMES = [
-  'LV',
-  'MV',
-  'HV',
-  'EV',
-  'IV',
-  'LuV',
-  'ZPM',
-  'UV',
-  'UHV',
-  'UEV',
-  'UIV',
-  'UMV',
-  'UXV',
-  'MAX'
-]
+const VISIBLE_PORTS = 6
 
 function PortRow({
   port,
   direction,
-  rate,
+  theoreticalRate,
+  actualRate,
   timeUnit
 }: {
   port: RecipePort
   direction: PortDirection
-  rate: number
+  theoreticalRate: number
+  actualRate?: number
   timeUnit: RecipeNodeData['timeUnit']
 }): React.JSX.Element {
   return (
     <div className={`port-row ${direction}`}>
-      {direction === 'input' && (
-        <Handle
-          id={port.key}
-          type="target"
-          position={Position.Left}
-          className="port-handle"
-          title={`${port.goods.name} · 输入端口`}
-        />
-      )}
-      {direction === 'output' && (
-        <Handle
-          id={port.key}
-          type="source"
-          position={Position.Right}
-          className="port-handle"
-          title={`${port.goods.name} · 输出端口`}
-        />
-      )}
+      <Handle
+        id={port.key}
+        type={direction === 'input' ? 'target' : 'source'}
+        position={direction === 'input' ? Position.Left : Position.Right}
+        className="port-handle"
+        title={`${port.goods.name} · ${direction === 'input' ? '输入' : '输出'}端口`}
+      />
       <AtlasIcon
         iconId={port.goods.iconId}
-        size={24}
+        size={22}
         title={`${port.goods.name}\n${port.amount} × ${(port.probability * 100).toFixed(1)}%`}
       />
       <span className="port-copy">
@@ -87,13 +64,52 @@ function PortRow({
           {port.probability < 0.9999
             ? ` × ${(port.probability * 100).toFixed(1)}%`
             : ''}
-          {direction === 'input' ? ' →' : ' ←'}
         </small>
       </span>
-      <span className="port-rate">
-        {formatRate(rate, timeUnit)}
-        <small>/{timeUnit === 'tick' ? 't' : timeUnit === 'sec' ? 's' : timeUnit === 'hour' ? 'h' : 'm'}</small>
+      <span className="port-rate" title="理论值；计算后追加实际流量">
+        {formatRate(theoreticalRate, timeUnit)}
+        {actualRate !== undefined && (
+          <small> / {formatRate(actualRate, timeUnit)}</small>
+        )}
       </span>
+    </div>
+  )
+}
+
+function PortColumn({
+  ports,
+  direction,
+  preview,
+  computed,
+  expanded,
+  timeUnit
+}: {
+  ports: RecipePort[]
+  direction: PortDirection
+  preview?: ComputedNode | null
+  computed?: ComputedNode
+  expanded: boolean
+  timeUnit: RecipeNodeData['timeUnit']
+}): React.JSX.Element {
+  const visible = expanded ? ports : ports.slice(0, VISIBLE_PORTS)
+  return (
+    <div className={`node-port-column ${direction}`}>
+      <header>{direction === 'input' ? '输入' : '产出'}</header>
+      {visible.map((port) => {
+        const theoretical = preview?.ports.find((entry) => entry.key === port.key)
+        const actual = computed?.ports.find((entry) => entry.key === port.key)
+        return (
+          <PortRow
+            key={port.key}
+            port={port}
+            direction={direction}
+            theoreticalRate={theoretical?.ratePerMinute ?? 0}
+            actualRate={computed ? actual?.ratePerMinute ?? 0 : undefined}
+            timeUnit={timeUnit}
+          />
+        )
+      })}
+      {!ports.length && <div className="port-empty">无</div>}
     </div>
   )
 }
@@ -102,121 +118,125 @@ export const RecipeNode = memo(function RecipeNode({
   data,
   selected
 }: NodeProps<RecipeFlowNode>): React.JSX.Element {
-  const { graphNode, detail, computed, timeUnit, onUpdate, onSelect } = data
-  const invalid = computed?.valid === false
-  const overclocked = (computed?.overclockTiers ?? 0) > 0
+  const { graphNode, detail, preview, computed, timeUnit, invalidReasons, onSelect } = data
+  const [expanded, setExpanded] = useState(false)
+  const hiddenInputs = Math.max(0, (detail?.inputs.length ?? 0) - VISIBLE_PORTS)
+  const hiddenOutputs = Math.max(0, (detail?.outputs.length ?? 0) - VISIBLE_PORTS)
+  const overclocked = (preview?.overclockTiers ?? 0) > 0
+  const invalid = Boolean(
+    invalidReasons?.length ||
+    !graphNode.recipeId ||
+    !detail ||
+    preview?.valid === false
+  )
+  const outputs = detail?.outputs.slice(0, 2) ?? []
 
   return (
     <article
       className={`recipe-node ${selected ? 'selected' : ''} ${invalid ? 'invalid' : ''}`}
-      onClick={onSelect}
+      onClick={() => onSelect(graphNode.id)}
     >
       <header className="node-header">
-        <div className="node-kind-icon">
-          <Factory size={17} />
-        </div>
+        <AtlasIcon
+          iconId={graphNode.machine.iconId}
+          size={28}
+          title={graphNode.machine.displayName}
+        />
         <div className="node-title">
-          <strong title={graphNode.label ?? detail.recipeType}>
-            {graphNode.label ?? detail.recipeType}
+          <strong title={graphNode.machine.displayName}>
+            {graphNode.machine.displayName}
           </strong>
-          <small>
-            {detail.category} · {(computed?.recipesPerMinute ?? 0).toFixed(3)} 次/min
-          </small>
+          <span className="node-output-summary">
+            {outputs.length
+              ? outputs.map((port) => port.goods.name).join(' · ')
+              : graphNode.recipeId
+                ? '配方数据缺失'
+                : '尚未选择配方'}
+            {outputs.length > 0 && detail!.outputs.length > 2
+              ? ` +${detail!.outputs.length - 2}`
+              : ''}
+          </span>
         </div>
-        {overclocked && <span className="oc-badge">{computed?.overclockName}</span>}
+        <span className={`machine-kind ${graphNode.machine.multiblock ? 'multi' : 'single'}`}>
+          {graphNode.machine.multiblock ? '多' : '单'}
+        </span>
+        {overclocked && <span className="oc-badge">{preview?.overclockName}</span>}
         {invalid && <AlertTriangle className="warning-icon" size={16} />}
+        <button
+          className="icon-button node-settings"
+          title="打开完整配置"
+          onClick={(event) => {
+            event.stopPropagation()
+            onSelect(graphNode.id)
+          }}
+        >
+          <Settings2 size={15} />
+        </button>
       </header>
 
-      <div className="node-ports">
-        {detail.inputs.map((port) => {
-          const current = computed?.ports.find((entry) => entry.key === port.key)
-          return (
-            <PortRow
-              key={port.key}
-              port={port}
+      {detail ? (
+        <>
+          <div className="node-port-columns">
+            <PortColumn
+              ports={detail.inputs}
               direction="input"
-              rate={current?.ratePerMinute ?? 0}
+              preview={preview}
+              computed={computed}
+              expanded={expanded}
               timeUnit={timeUnit}
             />
-          )
-        })}
-        {detail.outputs.map((port) => {
-          const current = computed?.ports.find((entry) => entry.key === port.key)
-          return (
-            <PortRow
-              key={port.key}
-              port={port}
+            <PortColumn
+              ports={detail.outputs}
               direction="output"
-              rate={current?.ratePerMinute ?? 0}
+              preview={preview}
+              computed={computed}
+              expanded={expanded}
               timeUnit={timeUnit}
             />
-          )
-        })}
-      </div>
+          </div>
+          {(hiddenInputs > 0 || hiddenOutputs > 0) && (
+            <button
+              className="port-expander"
+              onClick={(event) => {
+                event.stopPropagation()
+                setExpanded((value) => !value)
+              }}
+            >
+              {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              {expanded
+                ? '收起端口'
+                : `展开全部端口 · 输入 +${hiddenInputs} / 输出 +${hiddenOutputs}`}
+            </button>
+          )}
+        </>
+      ) : (
+        <div className="node-empty-recipe">
+          <span>先选择这台机器的配方</span>
+          <small>在右侧检查器中按原料或产物检索</small>
+        </div>
+      )}
 
       <footer className="node-footer">
-        <label className="node-control">
-          <span>机器</span>
-          <select
-            value={graphNode.crafterId ?? ''}
-            onClick={(event) => event.stopPropagation()}
-            onChange={(event) =>
-              onUpdate({ crafterId: event.target.value || undefined })
-            }
-          >
-            <option value="">自动选择</option>
-            {detail.availableCrafters.map((crafter) => (
-              <option key={crafter.id} value={crafter.id}>
-                {crafter.name}
-              </option>
-            ))}
-          </select>
-        </label>
         <label className="node-control compact">
           <span>电压</span>
-          <select
-            value={graphNode.voltageTier}
-            disabled={computed?.machineInfo?.fixedVoltageTier !== undefined}
-            onClick={(event) => event.stopPropagation()}
-            onChange={(event) =>
-              onUpdate({ voltageTier: Number(event.target.value) })
-            }
-          >
-            {VOLTAGE_NAMES.map((name, index) => (
-              <option key={name} value={index}>
-                {name}
-              </option>
-            ))}
-          </select>
+          <strong>{['LV', 'MV', 'HV', 'EV', 'IV', 'LuV', 'ZPM', 'UV', 'UHV', 'UEV', 'UIV', 'UMV', 'UXV', 'MAX'][graphNode.voltageTier] ?? '—'}</strong>
         </label>
         <div className="machine-count">
-          <span>{graphNode.rateMode === 'target' ? '目标' : '台数'}</span>
+          <span>{graphNode.rateMode === 'target' ? '目标' : '等效台数'}</span>
           <strong>
             {graphNode.rateMode === 'target'
               ? graphNode.targetRate
               : graphNode.machineCount}
           </strong>
         </div>
-        <button
-          className="icon-button node-settings"
-          title="打开完整配置"
-          onClick={(event) => {
-            event.stopPropagation()
-            onSelect()
-          }}
-        >
-          <Settings2 size={15} />
-        </button>
+        {preview && (
+          <div className="node-metrics inline">
+            <span>建造 {preview.recommendedMachineCount} 台</span>
+            <span>{(preview.utilization * 100).toFixed(0)}%</span>
+            <span>{formatPower(preview.euPerTick)} EU/t</span>
+          </div>
+        )}
       </footer>
-
-      {computed && (
-        <div className="node-metrics">
-          <span>等效 {computed.machineCount.toFixed(3)} 台</span>
-          <span>建造 {computed.recommendedMachineCount} 台</span>
-          <span>负载 {(computed.utilization * 100).toFixed(1)}%</span>
-          <span>{formatPower(computed.euPerTick)} EU/t</span>
-        </div>
-      )}
     </article>
   )
 })

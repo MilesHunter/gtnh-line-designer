@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync, readdirSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 const packageJson = JSON.parse(
@@ -25,4 +26,16 @@ execFileSync(
   }
 )
 
+const checksum = createHash('sha256')
+  .update(readFileSync(archive))
+  .digest('hex')
+  .toUpperCase()
+const checksumFile = path.join(releaseDir, 'SHA256SUMS.txt')
+writeFileSync(
+  checksumFile,
+  `${checksum}  ${path.basename(archive)}\n`,
+  'utf8'
+)
+
 console.log(`Portable archive: ${archive}`)
+console.log(`SHA-256: ${checksum}`)
