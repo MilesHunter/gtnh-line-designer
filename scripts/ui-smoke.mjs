@@ -56,8 +56,109 @@ try {
   await page.locator('.recipe-group-header').first().click()
   await page.locator('.recipe-result-row').first().click()
   await page.waitForSelector('.machine-choice-card', { timeout: 10000 })
+  const machineChoiceNames = await page
+    .locator('.machine-choice-card strong')
+    .allTextContents()
   await page.locator('.machine-choice-card').first().click()
   await page.waitForTimeout(300)
+  const machineChoicesCollapsed =
+    (await page.locator('.recipe-machine-choices').count()) === 0
+  const selectedMachineSummary = await page
+    .locator('.selected-machine-card')
+    .count()
+  await page.getByRole('button', { name: '更换机器' }).click()
+  const changeMachineSelectVisible =
+    (await page.locator('.inspector select').count()) > 0
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  const currentRecipeOutput = (
+    await page.locator('.selected-recipe-card strong').first().textContent()
+  )
+    ?.split(' · ')[0]
+    .trim()
+  if (!currentRecipeOutput) {
+    throw new Error('无法读取当前配方产物')
+  }
+  await page.getByRole('button', { name: '更换配方' }).click()
+  await page.waitForSelector('.inspector-finder', { timeout: 10000 })
+  const outputPicker = page
+    .locator('.inspector-finder .goods-slot.output .goods-slot-button')
+    .first()
+  await outputPicker.click()
+  await page
+    .locator('.inspector-finder .goods-slot.output .goods-picker-popover input')
+    .fill(currentRecipeOutput)
+  await page.waitForSelector(
+    '.inspector-finder .goods-slot.output .goods-option',
+    { timeout: 10000 }
+  )
+  const inspectorLayout = await page.evaluate(() => {
+    const inspector = document.querySelector('.inspector')
+    const popover = document.querySelector(
+      '.inspector-finder .goods-slot.output .goods-picker-popover'
+    )
+    const finder = document.querySelector('.inspector-finder')
+    const recipeGroups = finder?.querySelector('.recipe-groups')
+    if (!inspector || !popover || !finder || !recipeGroups) return null
+    const inspectorRect = inspector.getBoundingClientRect()
+    const popoverRect = popover.getBoundingClientRect()
+    const finderRect = finder.getBoundingClientRect()
+    const groupsRect = recipeGroups.getBoundingClientRect()
+    return {
+      inspectorHorizontalOverflow: inspector.scrollWidth - inspector.clientWidth,
+      popoverRightOverflow: popoverRect.right - inspectorRect.right,
+      groupsBottomOverflow: groupsRect.bottom - finderRect.bottom
+    }
+  })
+  await page.locator('.inspector-finder .goods-option').first().click()
+  await page.waitForSelector('.inspector-finder .recipe-group-header', {
+    timeout: 10000
+  })
+  for (const header of await page
+    .locator('.inspector-finder .recipe-group-header')
+    .all()) {
+    if ((await header.getAttribute('aria-expanded')) !== 'true') {
+      await header.click()
+    }
+  }
+  await page.evaluate(() => {
+    const groupBody = document.querySelector(
+      '.inspector-finder .recipe-group-body'
+    )
+    const result = groupBody?.querySelector('.recipe-result')
+    if (!groupBody || !result) return
+    for (let index = 0; index < 20; index += 1) {
+      groupBody.append(result.cloneNode(true))
+    }
+  })
+  const recipeListLayout = await page.evaluate(() => {
+    const inspector = document.querySelector('.inspector')
+    const finder = document.querySelector('.inspector-finder')
+    const recipeGroups = finder?.querySelector('.recipe-groups')
+    if (!inspector || !finder || !recipeGroups) return null
+    const inspectorRect = inspector.getBoundingClientRect()
+    const finderRect = finder.getBoundingClientRect()
+    const groupsRect = recipeGroups.getBoundingClientRect()
+    return {
+      inspectorHorizontalOverflow: inspector.scrollWidth - inspector.clientWidth,
+      finderBottom: finderRect.bottom,
+      groupsBottom: groupsRect.bottom,
+      groupsScrollable: recipeGroups.scrollHeight > recipeGroups.clientHeight
+    }
+  })
+  if (
+    !inspectorLayout ||
+    !recipeListLayout ||
+    inspectorLayout.inspectorHorizontalOverflow > 1 ||
+    inspectorLayout.popoverRightOverflow > 1 ||
+    inspectorLayout.groupsBottomOverflow > 1 ||
+    recipeListLayout.inspectorHorizontalOverflow > 1 ||
+    recipeListLayout.groupsBottom > recipeListLayout.finderBottom + 1
+  ) {
+    throw new Error(
+      `检查器布局溢出: ${JSON.stringify({ inspectorLayout, recipeListLayout })}`
+    )
+  }
+  await page.getByRole('button', { name: '收起', exact: true }).click()
   await page.locator('.goods-slot').first().locator('.slot-clear').click()
   await page.locator('.goods-slot-button').first().click()
   await page.locator('.goods-picker-popover input').fill('Iron Ingot')
@@ -93,6 +194,9 @@ try {
   await sourceHandle.dragTo(targetHandle, { force: true })
   await page.waitForTimeout(500)
   const edgeRendered = await page.locator('.react-flow__edge').count()
+  await page.getByRole('button', { name: '自动排版' }).click()
+  await page.waitForTimeout(500)
+  const autoLayoutNodeCount = await page.locator('.recipe-node').count()
   const modalWait = page
     .locator('.calculation-modal')
     .waitFor({ state: 'visible', timeout: 5000 })
@@ -127,6 +231,31 @@ try {
     timeout: 30000
   })
   await page.waitForTimeout(500)
+  await page.getByRole('button', { name: '机器搜索' }).click()
+  await page.locator('.search-field input').fill('离心机')
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll('.machine-row .row-copy strong')].some(
+        (element) => element.textContent === '离心机'
+      ),
+    { timeout: 10000 }
+  )
+  const centrifugeMachineNames = await page
+    .locator('.machine-row .row-copy strong')
+    .allTextContents()
+  if (
+    new Set(centrifugeMachineNames).size !== centrifugeMachineNames.length ||
+    !centrifugeMachineNames.includes('离心机') ||
+    !centrifugeMachineNames.includes('工业离心机') ||
+    centrifugeMachineNames.some((name) =>
+      /^(?:基础|进阶|精英)离心机/.test(name)
+    )
+  ) {
+    throw new Error(`离心机机器族合并失败: ${centrifugeMachineNames.join(', ')}`)
+  }
+  if (new Set(machineChoiceNames).size !== machineChoiceNames.length) {
+    throw new Error(`配方机器候选存在重复: ${machineChoiceNames.join(', ')}`)
+  }
   await page.screenshot({
     path: path.join(outputDir, 'ui-smoke.png'),
     fullPage: true
@@ -141,6 +270,14 @@ try {
       emptyNodeRendered,
       configuredNodeRendered,
       edgeRendered,
+      autoLayoutNodeCount,
+      machineChoiceNames,
+      centrifugeMachineNames,
+      machineChoicesCollapsed,
+      selectedMachineSummary,
+      changeMachineSelectVisible,
+      inspectorLayout,
+      recipeListLayout,
       calculationModalSeen,
       invalidNodeHighlighted,
       invalidBlockedModal,
