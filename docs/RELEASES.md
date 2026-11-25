@@ -12,12 +12,12 @@
 
 | 版本 | 发布日期 | Tag | Commit | Release | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| 0.3.0 | 2026-11-25 | `v0.3.0` | 发布后回填 | [GitHub Release](https://github.com/MilesHunter/gtnh-line-designer/releases/tag/v0.3.0) | 待发布 |
+| 0.3.0 | 2026-11-25 | `v0.3.0` | `a6bb2aa` | [GitHub Release](https://github.com/MilesHunter/gtnh-line-designer/releases/tag/v0.3.0) | 已发布（最新） |
 | 0.2.0 | 2026-10-26 | `v0.2.0` | `4523f86` | [GitHub Release](https://github.com/MilesHunter/gtnh-line-designer/releases/tag/v0.2.0) | 已发布 |
 | 0.1.0 | 2026-10-01 | `v0.1.0` | `0500e7d` | [GitHub Release](https://github.com/MilesHunter/gtnh-line-designer/releases/tag/v0.1.0) | 已发布 |
 | 下一版本 | 未定 | — | — | — | 开发中，未发布 |
 
-Tag 均为 annotated tag：`v0.2.0` 的 tag 对象为 `abfae08`，`v0.1.0` 的 tag 对象为 `c2aa8e6`；`v0.3.0` 打 tag 后回填。
+Tag 均为 annotated tag：`v0.3.0` 的 tag 对象为 `14bad0c`，`v0.2.0` 的 tag 对象为 `abfae08`，`v0.1.0` 的 tag 对象为 `c2aa8e6`。
 
 ## 0.3.0 — 机器族、自动排版与导出修复（2026-11-25）
 
@@ -26,11 +26,11 @@ Tag 均为 annotated tag：`v0.2.0` 的 tag 对象为 `abfae08`，`v0.1.0` 的 t
 | 项目 | 内容 |
 | --- | --- |
 | `package.json` 版本 | `0.3.0`，与 tag 一致 |
-| Tag / Commit | `v0.3.0` / 发布后回填 |
+| Tag / Commit | `v0.3.0` / `a6bb2aa` |
 | Release 正文 | [docs/RELEASE_NOTES_v0.3.0.md](RELEASE_NOTES_v0.3.0.md) |
-| 便携包 | `GTNH-Line-Designer-0.3.0-portable-x64.zip` |
-| ZIP SHA-256 | 发布后回填 |
-| 校验文件 | `SHA256SUMS.txt` |
+| 便携包 | `GTNH-Line-Designer-0.3.0-portable-x64.zip`（229 MB） |
+| ZIP SHA-256 | `d30f22161c9797447b902123dcdd2331ae1e1342f4798defe431005e119e4910` |
+| 校验文件 | `SHA256SUMS.txt` 已随 Release 上传 |
 
 ### 确认功能
 
@@ -44,7 +44,7 @@ Tag 均为 annotated tag：`v0.2.0` 的 tag 对象为 `abfae08`，`v0.1.0` 的 t
 **画布与排版**
 
 - 新增“自动排版”：按物料流方向对机器节点分层，减少节点重叠和连线交叉。
-- 自动排版按节点宽度和端口高度计算间距，并把整次移动合并为一步撤销。
+- 自动排版按节点高度和端口数量计算间距，并把整次移动合并为一步撤销。
 - 节点连线改为带圆角的折线路径，长距离产线和扇入扇出更容易追踪。
 
 **PNG 导出**
@@ -61,7 +61,10 @@ Tag 均为 annotated tag：`v0.2.0` 的 tag 对象为 `abfae08`，`v0.1.0` 的 t
 
 ### 核对结论
 
-- 待 Release workflow 完成后，补充 Commit、ZIP SHA-256 与发布状态。
+- tag 与 `package.json` 版本一致，Release 已由 release workflow 发布。
+- Release 正文与仓库内 `docs/RELEASE_NOTES_v0.3.0.md` 一致。
+- ZIP 与 `SHA256SUMS.txt` 均已上传，`SHA256SUMS.txt` 内容与 ZIP 的 SHA-256 一致。
+- tag 触发的首次运行 #5 在集成构建阶段长时间停留，取消后通过 `workflow_dispatch` 重跑 #6 成功。
 
 ## 0.2.0 — 机器节点重构（2026-10-26）
 
@@ -205,6 +208,13 @@ Tag 均为 annotated tag：`v0.2.0` 的 tag 对象为 `abfae08`，`v0.1.0` 的 t
 8. 如果 Release 被重新构建，更新本文件中的校验值，并注明覆盖时间。
 
 ## 核对记录
+
+### 2026-11-25
+
+- Release workflow #6（`workflow_dispatch`，tag `v0.3.0`）构建成功，Release 已发布。
+- `v0.3.0` 资产包含 ZIP（240,666,525 字节）与 `SHA256SUMS.txt`；ZIP SHA-256 为 `d30f2216…`。
+- `SHA256SUMS.txt` 内容与 ZIP 的 SHA-256 一致，Release 正文与 `docs/RELEASE_NOTES_v0.3.0.md` 一致。
+- 本地 `v0.3.0` tag 指向 `a6bb2aa`，tag 对象为 `14bad0c`；远端 main 与 tag 均已推送。
 
 ### 2026-11-08
 
