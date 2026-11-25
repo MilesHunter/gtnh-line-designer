@@ -28,7 +28,7 @@ Tag 均为 annotated tag：`v0.3.0` 的 tag 对象为 `14bad0c`，`v0.2.0` 的 t
 | `package.json` 版本 | `0.3.0`，与 tag 一致 |
 | Tag / Commit | `v0.3.0` / `a6bb2aa` |
 | Release 正文 | [docs/RELEASE_NOTES_v0.3.0.md](RELEASE_NOTES_v0.3.0.md) |
-| 便携包 | `GTNH-Line-Designer-0.3.0-portable-x64.zip`（229 MB） |
+| 便携包 | `GTNH-Line-Designer-0.3.0-portable-x64.zip`（约 230 MB） |
 | ZIP SHA-256 | `d30f22161c9797447b902123dcdd2331ae1e1342f4798defe431005e119e4910` |
 | 校验文件 | `SHA256SUMS.txt` 已随 Release 上传 |
 
