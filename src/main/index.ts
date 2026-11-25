@@ -12,6 +12,8 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { DataManager } from './data-manager'
 import { LocalExportManager } from './local-export-manager'
+import { clampCaptureRect } from '../shared/capture'
+import type { PngCaptureRect } from '../shared/types'
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -178,15 +180,30 @@ function registerIpc(): void {
   )
   ipcMain.handle('project:read-autosave', () => dataManager.readAutosave())
   ipcMain.handle(
-    'project:export-png',
-    async (_event, bytes: Uint8Array, suggestedName: string): Promise<string | null> => {
-      const result = await dialog.showSaveDialog(mainWindow!, {
+    'project:export-canvas-png',
+    async (
+      _event,
+      rect: PngCaptureRect,
+      suggestedName: string
+    ): Promise<string | null> => {
+      const targetWindow = mainWindow
+      if (!targetWindow || targetWindow.isDestroyed()) {
+        throw new Error('主窗口不可用')
+      }
+      const [contentWidth, contentHeight] = targetWindow.getContentSize()
+      const captureRect = clampCaptureRect(rect, contentWidth, contentHeight)
+      if (!captureRect) throw new Error('画布区域无效')
+
+      const image = await targetWindow.webContents.capturePage(captureRect)
+      if (image.isEmpty()) throw new Error('截取画布失败')
+
+      const result = await dialog.showSaveDialog(targetWindow, {
         title: '导出产线图 PNG',
         defaultPath: path.join(dataManager.getWorkspaceRoot(), suggestedName),
         filters: [{ name: 'PNG 图片', extensions: ['png'] }]
       })
       if (result.canceled || !result.filePath) return null
-      await writeFile(result.filePath, Buffer.from(bytes))
+      await writeFile(result.filePath, image.toPNG())
       return result.filePath
     }
   )

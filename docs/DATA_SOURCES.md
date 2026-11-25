@@ -99,6 +99,5 @@ Version:
 - Lucide
 - TanStack Virtual
 - `javascript-lp-solver`
-- `html-to-image`
 
 完整依赖树和版本见 `package.json` 与 `package-lock.json`。各依赖适用其自身许可证。

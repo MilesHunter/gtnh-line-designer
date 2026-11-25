@@ -491,6 +491,13 @@ export type WorkerResponse =
   | { id: number; type: 'solve'; result: SolveResult }
   | { id: number; type: 'error'; error: string }
 
+export interface PngCaptureRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface AppApi {
   getDataStatus: () => Promise<DataStatus>
   resolveAndDownload: (ref: string) => Promise<DownloadResult>
@@ -517,7 +524,10 @@ export interface AppApi {
   saveProject: (content: string, path?: string, saveAs?: boolean) => Promise<string | null>
   autosaveProject: (content: string) => Promise<void>
   readAutosave: () => Promise<string | null>
-  exportPng: (bytes: Uint8Array, suggestedName: string) => Promise<string | null>
+  exportCanvasPng: (
+    rect: PngCaptureRect,
+    suggestedName: string
+  ) => Promise<string | null>
   getAppRoot: () => Promise<string>
   onDownloadProgress: (callback: (progress: DownloadProgress) => void) => () => void
   onLocalImportProgress: (callback: (progress: LocalImportProgress) => void) => () => void

@@ -23,8 +23,8 @@ const api: AppApi = {
     ipcRenderer.invoke('project:save', content, path, saveAs),
   autosaveProject: (content) => ipcRenderer.invoke('project:autosave', content),
   readAutosave: () => ipcRenderer.invoke('project:read-autosave'),
-  exportPng: (bytes, suggestedName) =>
-    ipcRenderer.invoke('project:export-png', bytes, suggestedName),
+  exportCanvasPng: (rect, suggestedName) =>
+    ipcRenderer.invoke('project:export-canvas-png', rect, suggestedName),
   getAppRoot: () => ipcRenderer.invoke('data:appRoot'),
   onDownloadProgress: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, progress: DownloadProgress): void =>

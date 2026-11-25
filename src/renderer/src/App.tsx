@@ -18,7 +18,6 @@ import {
   type NodePositionChange,
   type NodeTypes
 } from '@xyflow/react'
-import { toBlob } from 'html-to-image'
 import {
   Calculator,
   Database,
@@ -109,6 +108,8 @@ function Workspace(): React.JSX.Element {
     recipes: number
   } | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const exportingRef = useRef(false)
   const [calculationOpen, setCalculationOpen] = useState(false)
   const [calculationStage, setCalculationStage] = useState(0)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
@@ -894,22 +895,35 @@ function Workspace(): React.JSX.Element {
   }, [hydrateProject, loadProject, status?.selected?.commit])
 
   const exportPng = useCallback(async () => {
-    const element = document.querySelector('.canvas-shell') as HTMLElement | null
-    if (!element) return
-    const blob = await toBlob(element, {
-      backgroundColor: '#0f1115',
-      pixelRatio: 2,
-      cacheBust: true
-    })
-    if (!blob) {
-      setToast('PNG 导出失败')
+    if (exportingRef.current) return
+    const element = document.querySelector<HTMLElement>('.canvas-shell')
+    if (!element) {
+      setToast('找不到可导出的画布区域')
       return
     }
-    const saved = await window.gtnh.exportPng(
-      new Uint8Array(await blob.arrayBuffer()),
-      `${project.name || 'GTNH产线'}.png`
-    )
-    if (saved) setToast('PNG 已导出')
+
+    exportingRef.current = true
+    setExporting(true)
+    setToast(null)
+    element.classList.add('exporting')
+    try {
+      // Let the minimap, controls and toast disappear before capturePage runs.
+      await waitFrame()
+      const rect = element.getBoundingClientRect()
+      const saved = await window.gtnh.exportCanvasPng(
+        { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        `${project.name || 'GTNH产线'}.png`
+      )
+      setToast(saved ? 'PNG 已导出' : '已取消导出 PNG')
+    } catch (error) {
+      setToast(
+        `PNG 导出失败：${error instanceof Error ? error.message : String(error)}`
+      )
+    } finally {
+      element.classList.remove('exporting')
+      exportingRef.current = false
+      setExporting(false)
+    }
   }, [project.name])
 
   useEffect(() => {
@@ -1149,9 +1163,14 @@ function Workspace(): React.JSX.Element {
               <option value="tick">tick</option>
             </select>
           </label>
-          <button className="icon-text" title="导出 PNG" onClick={() => void exportPng()}>
+          <button
+            className="icon-text"
+            title="导出当前视图为 PNG"
+            disabled={exporting}
+            onClick={() => void exportPng()}
+          >
             <FileDown size={16} />
-            PNG
+            {exporting ? '导出中…' : 'PNG'}
           </button>
           <button
             className="icon-text"
