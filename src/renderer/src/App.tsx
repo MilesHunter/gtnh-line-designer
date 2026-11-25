@@ -28,7 +28,8 @@ import {
   Redo2,
   Save,
   SaveAll,
-  Undo2
+  Undo2,
+  Workflow
 } from 'lucide-react'
 import type {
   CachedDataVersion,
@@ -55,6 +56,7 @@ import { AnalysisPanel } from './components/AnalysisPanel'
 import { CalculationModal } from './components/CalculationModal'
 import { VersionPicker } from './components/VersionPicker'
 import { issueMap, useProjectStore } from './store/project-store'
+import { layoutGraph } from './core/layout'
 
 const nodeTypes: NodeTypes = {
   machine: RecipeNode
@@ -475,6 +477,21 @@ function Workspace(): React.JSX.Element {
     })
   }, [resetWorker, setSolving])
 
+  const arrangeGraph = useCallback(() => {
+    const snapshot = useProjectStore.getState()
+    const positions = layoutGraph(
+      snapshot.project.nodes,
+      snapshot.project.edges,
+      snapshot.recipes
+    )
+    if (!positions.length) return
+    snapshot.setNodePositions(positions, true)
+    window.setTimeout(() => {
+      void flow.fitView({ duration: 320, padding: 0.16 })
+    }, 40)
+    setToast(`已整理 ${positions.length} 个节点`)
+  }, [flow])
+
   useEffect(() => {
     if (!workerLoaded || !dirty) return
     const timer = window.setInterval(() => {
@@ -555,11 +572,16 @@ function Workspace(): React.JSX.Element {
     () =>
       project.edges.map((edge) => ({
         id: edge.id,
+        type: 'smoothstep',
         source: edge.source.nodeId,
         target: edge.target.nodeId,
         sourceHandle: edge.source.portKey,
         targetHandle: edge.target.portKey,
         animated: false,
+        pathOptions: {
+          borderRadius: 12,
+          offset: 24
+        },
         selected: edge.id === selectedEdgeId,
         label: solveResult
           ? `${(solveResult.edgeFlows[edge.id] ?? 0).toFixed(2)}/min`
@@ -1137,6 +1159,15 @@ function Workspace(): React.JSX.Element {
           </button>
           <button className="icon-button" title="重做 (Ctrl+Y)" onClick={redo}>
             <Redo2 size={16} />
+          </button>
+          <button
+            className="icon-text"
+            title="按物料流方向自动整理节点"
+            disabled={!project.nodes.length}
+            onClick={arrangeGraph}
+          >
+            <Workflow size={16} />
+            自动排版
           </button>
           <span className="toolbar-separator" />
           <button

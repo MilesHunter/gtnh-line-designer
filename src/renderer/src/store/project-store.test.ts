@@ -129,6 +129,42 @@ describe('project store performance boundaries', () => {
     ).toEqual({ x: 1200, y: 800 })
   })
 
+  it('stores a complete auto-layout move as one undo step', () => {
+    const nodes = [makeNode(0), makeNode(1), makeNode(2)]
+    useProjectStore.setState({
+      project: withNodes(nodes),
+      past: [],
+      future: []
+    })
+    useProjectStore.getState().setNodePositions(
+      [
+        { id: 'node-0', x: 100, y: 100 },
+        { id: 'node-1', x: 500, y: 100 },
+        { id: 'node-2', x: 900, y: 100 }
+      ],
+      true
+    )
+
+    const entry = useProjectStore.getState().past.at(-1)
+    expect(entry?.nodes).toHaveLength(3)
+    useProjectStore.getState().undo()
+    expect(
+      useProjectStore.getState().project.nodes.map((node) => node.position)
+    ).toEqual([
+      { x: 0, y: 0 },
+      { x: 10, y: 4 },
+      { x: 20, y: 8 }
+    ])
+    useProjectStore.getState().redo()
+    expect(
+      useProjectStore.getState().project.nodes.map((node) => node.position)
+    ).toEqual([
+      { x: 100, y: 100 },
+      { x: 500, y: 100 },
+      { x: 900, y: 100 }
+    ])
+  })
+
   it('undoes node configuration patches without copying unrelated nodes', () => {
     const nodes = [makeNode(0), makeNode(1), makeNode(2)]
     useProjectStore.setState({

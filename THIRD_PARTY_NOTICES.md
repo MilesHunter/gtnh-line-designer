@@ -29,6 +29,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Dagre
+
+Automatic graph layout uses `@dagrejs/dagre` and `@dagrejs/graphlib`,
+distributed under the MIT License:
+
+https://github.com/dagrejs/dagre
+
 ## GTNH Data
 
 GTNH recipe data and icon atlases are downloaded by the user from:

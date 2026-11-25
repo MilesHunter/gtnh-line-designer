@@ -461,20 +461,31 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     })
   },
 
-  setNodePositions: (positions) => {
+  setNodePositions: (positions, history = false) => {
     if (!positions.length) return
     const state = get()
     const map = new Map(positions.map((entry) => [entry.id, entry]))
+    let changed = false
+    const nodes = state.project.nodes.map((node) => {
+      const position = map.get(node.id)
+      if (
+        !position ||
+        (position.x === node.position.x && position.y === node.position.y)
+      ) {
+        return node
+      }
+      changed = true
+      return { ...node, position: { x: position.x, y: position.y } }
+    })
+    if (!changed) return
+    const project = cloneProject(state.project, { nodes })
     set({
-      project: cloneProject(state.project, {
-        nodes: state.project.nodes.map((node) => {
-          const position = map.get(node.id)
-          return position && (position.x !== node.position.x || position.y !== node.position.y)
-            ? { ...node, position: { x: position.x, y: position.y } }
-            : node
-        })
-      }),
-      dirty: true
+      project,
+      dirty: true,
+      past: history
+        ? appendHistory(state.past, historyEntry(state.project, project))
+        : state.past,
+      future: history ? [] : state.future
     })
   },
 
