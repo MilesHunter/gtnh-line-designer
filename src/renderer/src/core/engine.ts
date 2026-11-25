@@ -27,6 +27,7 @@ import type {
   ExactRecipeSearchResponse,
   GoodsSummary,
   GraphNode,
+  MachineClass,
   MachineChoice,
   MachineInfo,
   MachineRef,
@@ -44,7 +45,8 @@ import type {
   SolveResult
 } from '../../../shared/types'
 import {
-  isSingleBlockMachine,
+  classifyMachine,
+  machineFamilyName,
   machineDisplayName,
   machineSearchText
 } from './machine-names'
@@ -67,6 +69,9 @@ interface IndexedMachine {
   item: Item
   recipeTypes: Set<string>
   multiblock: boolean
+  machineClass: MachineClass
+  familyName: string
+  groupKey: string
   displayName: string
   normalizedSearch: string
 }
@@ -99,6 +104,64 @@ const IO_OUTPUT = new Set<number>([
 
 function normalize(value: string): string {
   return value.trim().toLocaleLowerCase()
+}
+
+function singleBlockVariantRank(name: string): number {
+  const prefixes: Array<[string, number]> = [
+    ['Simple', 0],
+    ['简易', 0],
+    ['Basic', 1],
+    ['基础', 1],
+    ['Advanced', 2],
+    ['进阶', 2],
+    ['Elite', 3],
+    ['精英', 3],
+    ['Ultimate', 4],
+    ['终极', 4],
+    ['Epic', 5],
+    ['史诗', 5],
+    ['Master', 6],
+    ['大师', 6],
+    ['Grandmaster', 7],
+    ['宗师', 7],
+    ['Novice', 8],
+    ['新手', 8],
+    ['Adept', 9],
+    ['熟练', 9]
+  ]
+  const match = name.match(
+    /^(Simple|Basic|Advanced|Elite|Ultimate|Epic|Master|Grandmaster|Novice|Adept|简易|基础|进阶|精英|终极|史诗|大师|宗师|新手|熟练)(?:\s*(I|II|III|IV|V|VI|VII|VIII|IX|X|Ⅰ|Ⅱ|Ⅲ|Ⅳ|Ⅴ|Ⅵ|Ⅶ|Ⅷ|Ⅸ|Ⅹ))?/i
+  )
+  if (!match) return 0
+  const prefix = prefixes.find(
+    ([entry]) => entry.toLowerCase() === match[1].toLowerCase()
+  )?.[1] ?? 0
+  const suffixes = [
+    'I',
+    'II',
+    'III',
+    'IV',
+    'V',
+    'VI',
+    'VII',
+    'VIII',
+    'IX',
+    'X',
+    'Ⅰ',
+    'Ⅱ',
+    'Ⅲ',
+    'Ⅳ',
+    'Ⅴ',
+    'Ⅵ',
+    'Ⅶ',
+    'Ⅷ',
+    'Ⅸ',
+    'Ⅹ'
+  ]
+  const suffix = match[2]
+    ? (suffixes.findIndex((entry) => entry === match[2].toUpperCase()) % 10) + 1
+    : 0
+  return prefix * 20 + suffix
 }
 
 function choiceLabel(description: string): string {
@@ -654,29 +717,32 @@ export class GtnhEngine {
   }
 
   private buildMachineIndex(repository: Repository): void {
+    const rawMachines = new Map<string, IndexedMachine>()
     const add = (item: Item, recipeType: string): void => {
-      const effectiveMultiblock = !isSingleBlockMachine(
+      const machineClass = classifyMachine(
         item.name,
         item.tooltip
       )
-      const existing = this.machineById.get(item.id)
+      const familyName = machineFamilyName(item.name, machineClass)
+      const existing = rawMachines.get(item.id)
       if (existing) {
         existing.recipeTypes.add(recipeType)
-        existing.multiblock = effectiveMultiblock
         return
       }
-      const displayName = machineDisplayName(item.name)
+      const displayName = machineDisplayName(familyName)
       const entry: IndexedMachine = {
         item,
         recipeTypes: new Set([recipeType]),
-        multiblock: effectiveMultiblock,
+        multiblock: machineClass !== 'singleblock',
+        machineClass,
+        familyName,
+        groupKey: `${machineClass}:${normalize(familyName)}`,
         displayName,
         normalizedSearch: normalize(
-          `${item.name} ${machineSearchText(item.name)} ${item.mod}`
+          `${item.name} ${machineSearchText(item.name)} ${displayName} ${item.mod}`
         )
       }
-      this.machineById.set(item.id, entry)
-      this.machineIndex.push(entry)
+      rawMachines.set(item.id, entry)
     }
 
     for (const pointer of repository.recipeTypes) {
@@ -690,6 +756,46 @@ export class GtnhEngine {
       if (recipeType.defaultCrafter) {
         add(recipeType.defaultCrafter, recipeType.name)
       }
+    }
+
+    const groups = new Map<string, IndexedMachine[]>()
+    for (const entry of rawMachines.values()) {
+      const group = groups.get(entry.groupKey) ?? []
+      group.push(entry)
+      groups.set(entry.groupKey, group)
+    }
+
+    for (const [groupKey, entries] of groups) {
+      const representative = [...entries].sort((left, right) => {
+        const tierDifference =
+          singleBlockVariantRank(left.item.name) -
+          singleBlockVariantRank(right.item.name)
+        return tierDifference || left.item.name.localeCompare(right.item.name)
+      })[0]
+      const recipeTypes = new Set(
+        entries.flatMap((entry) => [...entry.recipeTypes])
+      )
+      const displayName = machineDisplayName(representative.familyName)
+      const normalizedSearch = normalize(
+        entries
+          .map(
+            (entry) =>
+              `${entry.item.name} ${machineSearchText(entry.item.name)} ${entry.item.mod}`
+          )
+          .join(' ')
+      )
+
+      representative.recipeTypes = recipeTypes
+      representative.displayName = displayName
+      representative.normalizedSearch = normalizedSearch
+      for (const entry of entries) {
+        entry.recipeTypes = recipeTypes
+        entry.displayName = displayName
+        entry.groupKey = groupKey
+        entry.normalizedSearch = normalizedSearch
+        this.machineById.set(entry.item.id, entry)
+      }
+      this.machineIndex.push(representative)
     }
   }
 
@@ -819,7 +925,8 @@ export class GtnhEngine {
       displayName: entry.displayName,
       iconId: entry.item.iconId,
       mod: entry.item.mod,
-      multiblock: entry.multiblock
+      multiblock: entry.multiblock,
+      machineClass: entry.machineClass
     }
   }
 
@@ -903,18 +1010,21 @@ export class GtnhEngine {
 
   private availableCrafters(recipe: Recipe): RecipeDetail['availableCrafters'] {
     const result = new Map<string, MachineRef>()
-    for (const item of recipe.recipeType.singleblocks) {
+    const seenGroups = new Set<string>()
+    const add = (item: Item): void => {
       const indexed = this.machineById.get(item.id)
-      if (indexed) result.set(item.id, this.machineRef(indexed))
+      if (!indexed || seenGroups.has(indexed.groupKey)) return
+      seenGroups.add(indexed.groupKey)
+      result.set(indexed.item.id, this.machineRef(indexed))
+    }
+    for (const item of recipe.recipeType.singleblocks) {
+      add(item)
     }
     for (const item of recipe.recipeType.multiblocks) {
-      const indexed = this.machineById.get(item.id)
-      if (indexed) result.set(item.id, this.machineRef(indexed))
+      add(item)
     }
     if (recipe.recipeType.defaultCrafter) {
-      const item = recipe.recipeType.defaultCrafter
-      const indexed = this.machineById.get(item.id)
-      if (indexed) result.set(item.id, this.machineRef(indexed))
+      add(recipe.recipeType.defaultCrafter)
     }
     return Array.from(result.values())
   }

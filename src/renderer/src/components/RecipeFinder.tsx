@@ -16,6 +16,11 @@ import type {
   SearchItemResult,
   SearchRecipeResult
 } from '../../../shared/types'
+import {
+  machineClassBadge,
+  machineClassLabel,
+  machineRefClass
+} from '../core/machine-names'
 import { AtlasIcon } from './AtlasIcon'
 
 export interface RecipeFinderProps {
@@ -33,6 +38,7 @@ type Slot = 'input' | 'output'
 
 function GoodsPicker({
   label,
+  slot,
   value,
   active,
   onActivate,
@@ -40,6 +46,7 @@ function GoodsPicker({
   searchGoods
 }: {
   label: string
+  slot: Slot
   value?: GoodsSummary
   active: boolean
   onActivate: () => void
@@ -74,7 +81,7 @@ function GoodsPicker({
   }, [active, query, searchGoods])
 
   return (
-    <div className={`goods-slot ${active ? 'active' : ''}`}>
+    <div className={`goods-slot ${slot} ${active ? 'active' : ''}`}>
       <button className="goods-slot-button" onClick={onActivate}>
         <span className="goods-slot-label">{label}</span>
         <span className="goods-slot-value">
@@ -155,31 +162,34 @@ function RecipeMachineChoices({
 }): React.JSX.Element {
   return (
     <div className="recipe-machine-choices">
-      {recipe.crafters.map((machine) => (
-        <button
-          key={machine.id}
-          className="machine-choice-card"
-          draggable
-          onDragStart={(event) => {
-            event.dataTransfer.setData(
-              'application/x-gtnh-machine-recipe',
-              JSON.stringify({ machine, recipeId: recipe.id })
-            )
-            event.dataTransfer.effectAllowed = 'copy'
-          }}
-          onClick={() => onChoose(machine, recipe.id)}
-          title={`使用 ${machine.displayName} 创建节点`}
-        >
-          <AtlasIcon iconId={machine.iconId} size={24} />
-          <span>
-            <strong>{machine.displayName}</strong>
-            <small>{machine.multiblock ? '多方块' : '单方块'}</small>
-          </span>
-          <span className={`machine-kind ${machine.multiblock ? 'multi' : 'single'}`}>
-            {machine.multiblock ? '多' : '单'}
-          </span>
-        </button>
-      ))}
+      {recipe.crafters.map((machine) => {
+        const machineClass = machineRefClass(machine)
+        return (
+          <button
+            key={machine.id}
+            className="machine-choice-card"
+            draggable
+            onDragStart={(event) => {
+              event.dataTransfer.setData(
+                'application/x-gtnh-machine-recipe',
+                JSON.stringify({ machine, recipeId: recipe.id })
+              )
+              event.dataTransfer.effectAllowed = 'copy'
+            }}
+            onClick={() => onChoose(machine, recipe.id)}
+            title={`使用 ${machine.displayName} 创建节点`}
+          >
+            <AtlasIcon iconId={machine.iconId} size={24} />
+            <span>
+              <strong>{machine.displayName}</strong>
+              <small>{machineClassLabel(machineClass)}</small>
+            </span>
+            <span className={`machine-kind ${machineClass}`}>
+              {machineClassBadge(machineClass)}
+            </span>
+          </button>
+        )
+      })}
       {!recipe.crafters.length && <span className="picker-hint">没有兼容机器</span>}
     </div>
   )
@@ -202,7 +212,11 @@ function RecipeGroup({
   const [expandedRecipe, setExpandedRecipe] = useState<string | null>(null)
   return (
     <section className={`recipe-group ${open ? 'open' : ''}`}>
-      <button className="recipe-group-header" onClick={() => setOpen((value) => !value)}>
+      <button
+        className="recipe-group-header"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <Factory size={14} />
         <strong>{recipeType}</strong>
@@ -220,7 +234,7 @@ function RecipeGroup({
                   className="recipe-result-row"
                   onClick={() =>
                     fixedMachine
-                      ? onChoose(fixedMachine, recipe.id)
+                      ? onChoose(recipe.crafters[0] ?? fixedMachine, recipe.id)
                       : setExpandedRecipe((value) =>
                           value === recipe.id ? null : recipe.id
                         )
@@ -249,7 +263,13 @@ function RecipeGroup({
                   )}
                 </button>
                 {!fixedMachine && expandedRecipe === recipe.id && (
-                  <RecipeMachineChoices recipe={recipe} onChoose={onChoose} />
+                  <RecipeMachineChoices
+                    recipe={recipe}
+                    onChoose={(machine, recipeId) => {
+                      onChoose(machine, recipeId)
+                      setExpandedRecipe(null)
+                    }}
+                  />
                 )}
               </div>
             )
@@ -327,6 +347,7 @@ export function RecipeFinder({
       <div className="goods-slots">
         <GoodsPicker
           label="原料"
+          slot="input"
           value={input}
           active={activeSlot === 'input'}
           onActivate={() => setActiveSlot(activeSlot === 'input' ? null : 'input')}
@@ -339,6 +360,7 @@ export function RecipeFinder({
         <span className="slot-arrow">→</span>
         <GoodsPicker
           label="产物"
+          slot="output"
           value={output}
           active={activeSlot === 'output'}
           onActivate={() => setActiveSlot(activeSlot === 'output' ? null : 'output')}

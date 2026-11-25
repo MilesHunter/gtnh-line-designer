@@ -9,6 +9,11 @@ import type {
   MachineSummary,
   RecipeSearchResponse
 } from '../../../shared/types'
+import {
+  machineClassBadge,
+  machineClassLabel,
+  machineRefClass
+} from '../core/machine-names'
 import { AtlasIcon } from './AtlasIcon'
 import { RecipeFinder } from './RecipeFinder'
 
@@ -29,6 +34,7 @@ function MachineRow({
   machine: MachineSummary
   onAdd: (machine: MachineRef) => void
 }): React.JSX.Element {
+  const machineClass = machineRefClass(machine)
   return (
     <button
       className="machine-row"
@@ -46,12 +52,12 @@ function MachineRow({
       <span className="row-copy">
         <strong title={machine.displayName}>{machine.displayName}</strong>
         <small>
-          {machine.multiblock ? '多方块' : '单方块'} · {machine.recipeTypeCount} 类配方
+          {machineClassLabel(machineClass)} · {machine.recipeTypeCount} 类配方
           {machine.hasModel ? '' : ' · 近似计算'}
         </small>
       </span>
-      <span className={`machine-kind ${machine.multiblock ? 'multi' : 'single'}`}>
-        {machine.multiblock ? '多' : '单'}
+      <span className={`machine-kind ${machineClass}`}>
+        {machineClassBadge(machineClass)}
       </span>
     </button>
   )

@@ -14,6 +14,11 @@ import type {
   RecipePort
 } from '../../../shared/types'
 import { formatPower, formatRate } from '../lib/project'
+import {
+  machineClassBadge,
+  machineClassLabel,
+  machineRefClass
+} from '../core/machine-names'
 import { AtlasIcon } from './AtlasIcon'
 
 export interface RecipeNodeData extends Record<string, unknown> {
@@ -130,6 +135,7 @@ export const RecipeNode = memo(function RecipeNode({
     preview?.valid === false
   )
   const outputs = detail?.outputs.slice(0, 2) ?? []
+  const machineClass = machineRefClass(graphNode.machine)
 
   return (
     <article
@@ -157,8 +163,11 @@ export const RecipeNode = memo(function RecipeNode({
               : ''}
           </span>
         </div>
-        <span className={`machine-kind ${graphNode.machine.multiblock ? 'multi' : 'single'}`}>
-          {graphNode.machine.multiblock ? '多' : '单'}
+        <span
+          className={`machine-kind ${machineClass}`}
+          title={machineClassLabel(machineClass)}
+        >
+          {machineClassBadge(machineClass)}
         </span>
         {overclocked && <span className="oc-badge">{preview?.overclockName}</span>}
         {invalid && <AlertTriangle className="warning-icon" size={16} />}

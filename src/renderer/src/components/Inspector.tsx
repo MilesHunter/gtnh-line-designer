@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import {
   AlertTriangle,
+  CircleCheck,
   Copy,
   Gauge,
   RefreshCw,
@@ -18,6 +19,11 @@ import type {
   SolveResult
 } from '../../../shared/types'
 import { formatPower } from '../lib/project'
+import {
+  machineClassBadge,
+  machineClassLabel,
+  machineRefClass
+} from '../core/machine-names'
 import { AtlasIcon } from './AtlasIcon'
 import { RecipeFinder } from './RecipeFinder'
 
@@ -80,6 +86,7 @@ export function Inspector({
   onDuplicate
 }: InspectorProps): React.JSX.Element {
   const [choosingRecipe, setChoosingRecipe] = useState(false)
+  const [changingMachine, setChangingMachine] = useState(false)
 
   if (edge) {
     return (
@@ -141,6 +148,7 @@ export function Inspector({
   const warnings = invalidReasons?.length
     ? invalidReasons
     : preview?.warnings ?? []
+  const machineClass = machineRefClass(node.machine)
 
   return (
     <aside className="inspector">
@@ -150,8 +158,11 @@ export function Inspector({
           <h2>{node.machine.displayName}</h2>
         </div>
         <div className="inspector-title-actions">
-          <span className={`machine-kind ${node.machine.multiblock ? 'multi' : 'single'}`}>
-            {node.machine.multiblock ? '多' : '单'}
+          <span
+            className={`machine-kind ${machineClass}`}
+            title={machineClassLabel(machineClass)}
+          >
+            {machineClassBadge(machineClass)}
           </span>
           <button className="icon-button" title="复制节点" onClick={onDuplicate}>
             <Copy size={15} />
@@ -307,27 +318,64 @@ export function Inspector({
 
       <section className="inspector-section">
         <h3>机器与超频</h3>
-        <label className="field">
-          <span>具体机器</span>
-          <select
-            value={node.machine.id}
-            disabled={!detail}
-            onChange={(event) => {
-              const machine = detail?.availableCrafters.find(
-                (entry) => entry.id === event.target.value
-              )
-              if (machine) onChangeMachine(machine)
-            }}
-          >
-            {!detail && <option value={node.machine.id}>{node.machine.displayName}</option>}
-            {detail?.availableCrafters.map((machine) => (
-              <option key={machine.id} value={machine.id}>
-                {machine.displayName}
-              </option>
-            ))}
-          </select>
-          <small>更换机器会断开当前节点的全部连线。</small>
-        </label>
+        {!changingMachine ? (
+          <div className="selected-machine-card">
+            <AtlasIcon
+              iconId={node.machine.iconId}
+              size={28}
+              title={node.machine.displayName}
+            />
+            <span>
+              <strong>{node.machine.displayName}</strong>
+              <small>
+                {detail ? (
+                  <>
+                    <CircleCheck size={11} />
+                    已用于当前配方 · {machineClassLabel(machineClass)}
+                  </>
+                ) : (
+                  '已选择机器 · 尚未选择配方'
+                )}
+              </small>
+            </span>
+            {detail && (
+              <button
+                className="compact-action"
+                onClick={() => setChangingMachine(true)}
+              >
+                <RefreshCw size={12} />
+                更换机器
+              </button>
+            )}
+          </div>
+        ) : (
+          <label className="field">
+            <span>更换具体机器</span>
+            <select
+              value={node.machine.id}
+              onChange={(event) => {
+                const machine = detail?.availableCrafters.find(
+                  (entry) => entry.id === event.target.value
+                )
+                if (machine) onChangeMachine(machine)
+                setChangingMachine(false)
+              }}
+            >
+              {detail?.availableCrafters.map((machine) => (
+                <option key={machine.id} value={machine.id}>
+                  {machine.displayName}
+                </option>
+              ))}
+            </select>
+            <small>更换机器会断开当前节点的全部连线。</small>
+            <button
+              className="compact-action"
+              onClick={() => setChangingMachine(false)}
+            >
+              取消
+            </button>
+          </label>
+        )}
         <label className="field">
           <span>电压等级</span>
           <select

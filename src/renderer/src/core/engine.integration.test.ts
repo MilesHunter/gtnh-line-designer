@@ -36,6 +36,13 @@ describe.skipIf(!hasLocalData)('GtnhEngine with GTNH 2.9.0-v7 data', () => {
     expect(detail?.outputs.some((port) => port.goods.name === 'Iron Plate')).toBe(
       true
     )
+    expect(
+      new Set(
+        detail!.availableCrafters.map(
+          (machine) => `${machine.machineClass}:${machine.displayName}`
+        )
+      ).size
+    ).toBe(detail!.availableCrafters.length)
 
     const project = createProject(null)
     project.data = {
@@ -92,10 +99,45 @@ describe.skipIf(!hasLocalData)('GtnhEngine with GTNH 2.9.0-v7 data', () => {
     expect(allMachines.some((machine) => machine.multiblock)).toBe(true)
     expect(allMachines.some((machine) => !machine.multiblock)).toBe(true)
     const basicAlloySmelter = allMachines.find(
-      (machine) => machine.name === 'Basic Alloy Smelter'
+      (machine) => machine.displayName === '合金炉'
     )
     expect(basicAlloySmelter?.multiblock).toBe(false)
-    expect(basicAlloySmelter?.displayName).toBe('基础合金炉')
+    expect(basicAlloySmelter?.name).toBe('Basic Alloy Smelter')
+    expect(basicAlloySmelter?.machineClass).toBe('singleblock')
+
+    const centrifugeMachines = engine.searchMachines('离心机', 200).machines
+    expect(
+      centrifugeMachines.some(
+        (machine) =>
+          machine.displayName === '离心机' &&
+          machine.machineClass === 'singleblock'
+      )
+    ).toBe(true)
+    expect(
+      centrifugeMachines.some(
+        (machine) =>
+          machine.displayName === '工业离心机' &&
+          machine.machineClass === 'multiblock'
+      )
+    ).toBe(true)
+    expect(
+      centrifugeMachines.some((machine) =>
+        /^(?:基础|进阶|精英)离心机/.test(machine.displayName)
+      )
+    ).toBe(false)
+
+    const electrolyzerMachines = engine.searchMachines('电解机', 200).machines
+    expect(
+      electrolyzerMachines.filter(
+        (machine) =>
+          machine.displayName === '电解机' &&
+          machine.machineClass === 'singleblock'
+      )
+    ).toHaveLength(1)
+    const megaChemicalReactor = engine
+      .searchMachines('巨型化学反应釜', 50)
+      .machines.find((machine) => machine.displayName === '巨型化学反应釜')
+    expect(megaChemicalReactor?.machineClass).toBe('mega')
 
     const ironPlateGoods = engine.searchGoods('Iron Plate', 20).items[0]
     const ironIngotGoods = engine.searchGoods('Iron Ingot', 20).items.find(

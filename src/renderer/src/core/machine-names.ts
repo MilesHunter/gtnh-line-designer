@@ -1,3 +1,5 @@
+import type { MachineClass, MachineRef } from '../../../shared/types'
+
 const MACHINE_ALIASES: Record<string, string> = {
   'Advanced Assembly Line': '进阶装配线',
   'Alloy Blast Smelter': '合金高炉',
@@ -152,6 +154,8 @@ export function machineDisplayName(englishName: string): string {
     ['Novice', '新手'],
     ['Adept', '熟练'],
     ['Simple', '简易'],
+    ['Mega', '巨型'],
+    ['Giga', '巨型'],
     ['Turbo', '涡轮'],
     ['Large', '大型'],
     ['Small', '小型'],
@@ -242,6 +246,60 @@ export function machineDisplayName(englishName: string): string {
 
 export function machineSearchText(englishName: string): string {
   return `${englishName} ${machineDisplayName(englishName)}`.trim()
+}
+
+const SINGLEBLOCK_TIER_PREFIX =
+  /^(?:Grandmaster|Master|Ultimate|Elite|Advanced|Basic|Epic|Novice|Adept|Simple)\s+/i
+const SINGLEBLOCK_TIER_PREFIX_ZH =
+  /^(?:宗师|大师|终极|精英|进阶|基础|史诗|新手|熟练|简易)\s*/
+const TIER_SUFFIX = /\s*(?:I|II|III|IV|V|VI|VII|VIII|IX|X|Ⅰ|Ⅱ|Ⅲ|Ⅳ|Ⅴ|Ⅵ|Ⅶ|Ⅷ|Ⅸ|Ⅹ)$/i
+
+export function singleBlockFamilyName(englishName: string): string {
+  return englishName
+    .replace(SINGLEBLOCK_TIER_PREFIX, '')
+    .replace(SINGLEBLOCK_TIER_PREFIX_ZH, '')
+    .replace(TIER_SUFFIX, '')
+    .trim()
+}
+
+export function machineFamilyName(
+  englishName: string,
+  machineClass: MachineClass
+): string {
+  return machineClass === 'singleblock'
+    ? singleBlockFamilyName(englishName)
+    : englishName.trim()
+}
+
+export function classifyMachine(
+  englishName: string,
+  tooltip?: string | null
+): MachineClass {
+  if (isSingleBlockMachine(englishName, tooltip)) return 'singleblock'
+  if (/^(?:Mega|Giga)\b/i.test(englishName) || /巨型/.test(englishName)) {
+    return 'mega'
+  }
+  return 'multiblock'
+}
+
+export function machineClassLabel(machineClass: MachineClass): string {
+  if (machineClass === 'singleblock') return '单方块'
+  if (machineClass === 'mega') return '巨型多方块'
+  return '多方块'
+}
+
+export function machineClassBadge(machineClass: MachineClass): string {
+  if (machineClass === 'singleblock') return '单'
+  if (machineClass === 'mega') return '巨'
+  return '多'
+}
+
+export function machineRefClass(
+  machine: Pick<MachineRef, 'name' | 'multiblock' | 'machineClass'>
+): MachineClass {
+  if (machine.machineClass) return machine.machineClass
+  if (!machine.multiblock) return 'singleblock'
+  return /^(?:Mega|Giga)\b/i.test(machine.name) ? 'mega' : 'multiblock'
 }
 
 const SIMPLE_STEAM_SINGLEBLOCKS = new Set([

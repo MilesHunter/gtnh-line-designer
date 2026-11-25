@@ -7,6 +7,7 @@ export type TimeUnit = 'hour' | 'min' | 'sec' | 'tick'
 export type RateMode = 'machines' | 'target'
 export type PortDirection = 'input' | 'output'
 export type NesqlProfileId = 'modern' | 'gtnh-2.8.4'
+export type MachineClass = 'singleblock' | 'multiblock' | 'mega'
 
 export interface VersionChoice {
   label: string
@@ -172,6 +173,7 @@ export interface MachineRef {
   iconId: number
   mod: string
   multiblock: boolean
+  machineClass?: MachineClass
 }
 
 export interface MachineSummary extends MachineRef {

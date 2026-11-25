@@ -438,6 +438,12 @@ kbd {
   background: #10141a;
 }
 
+.canvas-shell.exporting .react-flow__minimap,
+.canvas-shell.exporting .react-flow__controls,
+.canvas-shell.exporting .react-flow__panel {
+  display: none;
+}
+
 .canvas-shell .react-flow__pane {
   cursor: grab;
 }
@@ -1608,6 +1614,18 @@ button:disabled {
   background: #292318;
 }
 
+.machine-kind.singleblock {
+  border-color: #3f6470;
+  color: #9fd1df;
+  background: #15252b;
+}
+
+.machine-kind.mega {
+  border-color: #7b4f5c;
+  color: #efa6ba;
+  background: #2a1720;
+}
+
 .recipe-finder {
   display: flex;
   min-height: 0;
@@ -1703,6 +1721,11 @@ button:disabled {
   box-shadow: 0 12px 38px #000000bb;
 }
 
+.goods-slot.output .goods-picker-popover {
+  right: 0;
+  left: auto;
+}
+
 .compact-field {
   margin: 0 0 6px;
 }
@@ -1765,6 +1788,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
   min-height: 31px;
   border-bottom: 1px solid var(--line);
   color: var(--muted);
@@ -1786,6 +1810,9 @@ button:disabled {
 
 .recipe-groups {
   flex: 1;
+  min-width: 0;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
   padding: 5px 0 10px;
 }
 
@@ -2110,11 +2137,54 @@ button:disabled {
   font-size: 8px;
 }
 
+.selected-machine-card {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  border: 1px solid #31433f;
+  border-radius: 4px;
+  padding: 7px;
+  background: #121c1a;
+}
+
+.selected-machine-card > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.selected-machine-card strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selected-machine-card small {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--teal);
+  font-size: 8px;
+}
+
 .inspector-finder {
+  display: flex;
   height: 390px;
+  min-height: 0;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 4px;
   background: #11161c;
+}
+
+.inspector-finder > .recipe-finder {
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .recipe-finder.compact {
@@ -2126,7 +2196,7 @@ button:disabled {
 }
 
 .recipe-finder.compact .goods-picker-popover {
-  width: 280px;
+  width: min(280px, calc(100vw - 32px));
 }
 
 .actual-summary {
